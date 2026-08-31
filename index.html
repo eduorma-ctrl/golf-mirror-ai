@@ -903,14 +903,15 @@
       const base64Data = snapshotUrl.split(",")[1] || "";
 
       const prompt = "You are a golf computer vision system analyzing an address posture frame (" + profile.label + ").\n" +
-        "Return normalized 2D coordinates (0.0-1.0, top-left origin) for this player's actual setup:\n" +
+        "Return 2D point coordinates on Gemini's native 0-1000 scale (top-left origin, per your spatial " +
+        "understanding conventions -- NOT 0.0-1.0) for this player's actual setup:\n" +
         "1. clubHead: the clubhead on the ground\n" +
         "2. gripHands: center of the hands on the grip\n" +
         "3. headCenter: center of the head\n" +
         "4. tushLineX: outermost lateral silhouette edge of the glutes\n" +
         "5. shaftAngleDegrees: measured shaft angle to horizontal. Do not snap to 45/50/55.\n" +
-        'Return only JSON: {"detected":true,"clubHead":{"x":0.35,"y":0.84},"gripHands":{"x":0.48,"y":0.58},' +
-        '"headCenter":{"x":0.5,"y":0.28},"tushLineX":0.62,"shaftAngleDegrees":49.2,"confidence":98}';
+        'Return only JSON: {"detected":true,"clubHead":{"x":350,"y":840},"gripHands":{"x":480,"y":580},' +
+        '"headCenter":{"x":500,"y":280},"tushLineX":620,"shaftAngleDegrees":49.2,"confidence":98}';
 
       // Low thinking: coordinate localization is a perception task, and the
       // golfer is holding a stance while this runs. Speed matters here.
@@ -918,16 +919,18 @@
       if (ai && ai.detected) {
         const cw = canvas.clientWidth || 1;
         const ch = canvas.clientHeight || 1;
-        // Map a point normalized to the cropped video frame back into canvas-normalized space.
+        // Gemini returns points on its native 0-1000 scale, relative to the cropped
+        // video frame we sent. Descale to 0-1 first, then map into canvas-normalized
+        // space using the video's on-canvas rect (accounts for any letterboxing).
         const toCanvasNorm = (pt) => ({
-          x: (capturedVideoRect.x + pt.x * capturedVideoRect.w) / cw,
-          y: (capturedVideoRect.y + pt.y * capturedVideoRect.h) / ch
+          x: (capturedVideoRect.x + (pt.x / 1000) * capturedVideoRect.w) / cw,
+          y: (capturedVideoRect.y + (pt.y / 1000) * capturedVideoRect.h) / ch
         });
         if (ai.clubHead) detected.clubHead = toCanvasNorm(ai.clubHead);
         if (ai.gripHands) detected.gripHands = toCanvasNorm(ai.gripHands);
         if (ai.headCenter) detected.headCenter = toCanvasNorm(ai.headCenter);
         if (ai.tushLineX !== undefined) {
-          detected.tushLineX = (capturedVideoRect.x + Number(ai.tushLineX) * capturedVideoRect.w) / cw;
+          detected.tushLineX = (capturedVideoRect.x + (Number(ai.tushLineX) / 1000) * capturedVideoRect.w) / cw;
         }
         detected.confidence = Number(ai.confidence) || 95;
       }
