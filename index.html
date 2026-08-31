@@ -894,6 +894,11 @@
         confidence: 70
       };
 
+      // Capture the video's on-canvas rect now: snapshotFrame() crops to just this
+      // region, so Gemini's coordinates come back normalized to the crop, not the
+      // full canvas. Any letterboxing (video aspect != canvas aspect) means those
+      // two spaces differ and must be reconciled below.
+      const capturedVideoRect = { x: videoRect.x, y: videoRect.y, w: videoRect.w, h: videoRect.h };
       const snapshotUrl = snapshotFrame();
       const base64Data = snapshotUrl.split(",")[1] || "";
 
@@ -911,10 +916,19 @@
       // golfer is holding a stance while this runs. Speed matters here.
       const ai = await callGemini(prompt, base64Data, 20000, "low");
       if (ai && ai.detected) {
-        if (ai.clubHead) detected.clubHead = ai.clubHead;
-        if (ai.gripHands) detected.gripHands = ai.gripHands;
-        if (ai.headCenter) detected.headCenter = ai.headCenter;
-        if (ai.tushLineX) detected.tushLineX = Number(ai.tushLineX);
+        const cw = canvas.clientWidth || 1;
+        const ch = canvas.clientHeight || 1;
+        // Map a point normalized to the cropped video frame back into canvas-normalized space.
+        const toCanvasNorm = (pt) => ({
+          x: (capturedVideoRect.x + pt.x * capturedVideoRect.w) / cw,
+          y: (capturedVideoRect.y + pt.y * capturedVideoRect.h) / ch
+        });
+        if (ai.clubHead) detected.clubHead = toCanvasNorm(ai.clubHead);
+        if (ai.gripHands) detected.gripHands = toCanvasNorm(ai.gripHands);
+        if (ai.headCenter) detected.headCenter = toCanvasNorm(ai.headCenter);
+        if (ai.tushLineX !== undefined) {
+          detected.tushLineX = (capturedVideoRect.x + Number(ai.tushLineX) * capturedVideoRect.w) / cw;
+        }
         detected.confidence = Number(ai.confidence) || 95;
       }
 
