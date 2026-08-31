@@ -1,0 +1,1565 @@
+<!DOCTYPE html>
+<html lang="en" class="w-full bg-slate-950">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+
+  <!-- Mobile PWA & Web App Meta Tags -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Golf Mirror AI" />
+  <meta name="theme-color" content="#020617" />
+  <meta name="description" content="AI-Powered Down-the-Line Golf Mirror & Swing Plane Coach for Solo Practice" />
+
+  <title>Golf Mirror AI - Solo Swing Coach</title>
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23020617'/%3E%3Ccircle cx='12' cy='12' r='7' fill='none' stroke='%2310b981' stroke-width='2'/%3E%3Ccircle cx='12' cy='12' r='1.5' fill='%2310b981'/%3E%3C/svg%3E" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons (pinned — avoid @latest drifting under us in production) -->
+  <script src="https://unpkg.com/lucide@0.469.0"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Real mobile viewport height - dvh accounts for the collapsing URL bar */
+    html, body {
+      height: 100dvh;
+      max-height: 100dvh;
+      overflow: hidden;
+    }
+
+    body {
+      touch-action: manipulation;
+      -webkit-user-select: none;
+      user-select: none;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    input[type=range]::-webkit-slider-thumb {
+      background-color: #10b981;
+      height: 18px;
+      width: 18px;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    @keyframes scanline {
+      0% { transform: translateY(-100%); }
+      100% { transform: translateY(1000%); }
+    }
+    .animate-scan {
+      animation: scanline 1.2s linear infinite;
+    }
+    @keyframes pulse-countdown {
+      0% { transform: scale(1.35); opacity: 0.3; }
+      50% { transform: scale(1.0); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.8; }
+    }
+    .animate-countdown-num {
+      animation: pulse-countdown 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+    }
+    @keyframes lock-flash {
+      0% { opacity: 0; transform: scale(0.95); }
+      50% { opacity: 0.85; transform: scale(1.0); }
+      100% { opacity: 0; transform: scale(1.05); }
+    }
+    .animate-lock-flash {
+      animation: lock-flash 0.45s ease-out forwards;
+    }
+    @keyframes target-pulse {
+      0%, 100% { opacity: 0.4; border-color: rgba(16, 185, 129, 0.4); }
+      50% { opacity: 0.95; border-color: rgba(16, 185, 129, 0.95); }
+    }
+    .animate-target-box {
+      animation: target-pulse 2.0s ease-in-out infinite;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .animate-scan, .animate-countdown-num, .animate-target-box { animation: none; }
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 flex flex-col w-full overflow-hidden select-none">
+
+  <!-- Top Header Bar -->
+  <header class="min-h-14 bg-slate-900/95 backdrop-blur border-b border-slate-800 flex items-center justify-between gap-2 px-2 sm:px-4 z-30 shrink-0">
+    <div class="flex items-center space-x-2 shrink-0">
+      <div class="p-2 bg-emerald-500/20 text-emerald-400 rounded-lg border border-emerald-500/30">
+        <i data-lucide="crosshair" class="w-5 h-5"></i>
+      </div>
+      <div class="hidden xs:block sm:block">
+        <h1 class="text-xs sm:text-sm font-bold tracking-wide text-white uppercase flex items-center gap-1.5">
+          Golf Mirror <span id="mode-badge" class="hidden sm:inline text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/40 font-mono">AI Pro</span>
+        </h1>
+        <p id="stream-status" class="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span id="stream-status-text">Vision Engine Active</span>
+        </p>
+      </div>
+    </div>
+
+    <!-- Quick Action Toolbar -->
+    <div class="flex items-center gap-1 sm:gap-1.5 overflow-x-auto no-scrollbar shrink min-w-0 py-1">
+      <!-- Stance Profile Selector -->
+      <button id="btn-stance-profile" class="shrink-0 flex items-center gap-1 px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 hover:border-emerald-500/60 text-slate-200 font-bold text-xs active:scale-95 transition" title="Toggle Stance: Righty DTL / Lefty DTL / Face-On">
+        <i data-lucide="user-check" class="w-4 h-4 text-emerald-400"></i>
+        <span id="stance-profile-label" class="hidden sm:inline">Righty DTL</span>
+      </button>
+
+      <!-- Hands-Free Precision Lock Timer -->
+      <button id="btn-timer-trigger" class="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-900/40 active:scale-95 transition">
+        <i data-lucide="shield-check" class="w-4 h-4"></i>
+        <span id="timer-btn-text" class="hidden sm:inline">Lock (5s)</span>
+      </button>
+
+      <!-- Instant Scan -->
+      <button id="btn-instant-scan" class="shrink-0 p-2 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500 hover:text-slate-950 active:scale-95 transition font-bold" title="Instant AI Scan Stance Now">
+        <i data-lucide="zap" class="w-4 h-4"></i>
+      </button>
+
+      <!-- Timer Delay Selector -->
+      <button id="btn-timer-config" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white active:scale-95 transition text-xs font-bold" title="Adjust Timer Delay">
+        <span id="timer-config-label">5s</span>
+      </button>
+
+      <!-- Framing Reticle Toggle -->
+      <button id="btn-toggle-guide-box" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-emerald-400 hover:text-white active:scale-95 transition" title="Toggle Stance Framing Zone">
+        <i data-lucide="scan-face" class="w-4 h-4"></i>
+      </button>
+
+      <!-- AI Coach -->
+      <button id="btn-ai-analyze" class="shrink-0 flex items-center gap-1 px-2.5 py-2 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 font-semibold text-xs active:scale-95 transition" title="AI Biomechanical Review">
+        <i data-lucide="sparkles" class="w-4 h-4 text-emerald-400"></i>
+        <span class="hidden md:inline">AI Coach</span>
+      </button>
+
+      <!-- Settings -->
+      <button id="btn-open-settings" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white active:scale-95 transition" title="Settings & Diagnostics">
+        <i data-lucide="settings" class="w-4 h-4"></i>
+      </button>
+
+      <!-- Switch Camera -->
+      <button id="btn-cam-source" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white active:scale-95 transition" title="Switch Camera Source">
+        <i data-lucide="camera" class="w-4 h-4"></i>
+      </button>
+
+      <!-- Mirror Flip -->
+      <button id="btn-toggle-mirror" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white active:scale-95 transition" title="Toggle Mirror Orientation">
+        <i data-lucide="flip-horizontal" class="w-4 h-4"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Viewport Area -->
+  <main class="relative flex-1 min-h-0 bg-slate-950 flex items-center justify-center overflow-hidden">
+    <video id="webcam" autoplay playsinline webkit-playsinline muted style="position: absolute; top: 0; left: 0; width: 320px; height: 240px; opacity: 0.001; pointer-events: none; z-index: -10;"></video>
+
+    <canvas id="main-canvas" class="block w-full h-full cursor-crosshair touch-none"></canvas>
+
+    <!-- Camera Permission Banner -->
+    <div id="camera-prompt-overlay" class="absolute inset-0 bg-slate-950/95 backdrop-blur-md z-40 flex flex-col items-center justify-center p-6 text-center">
+      <div class="p-4 bg-emerald-500/20 text-emerald-400 rounded-2xl border border-emerald-500/40 mb-3 animate-pulse">
+        <i data-lucide="camera" class="w-10 h-10"></i>
+      </div>
+      <h2 class="text-lg font-bold text-white mb-1">Enable Range Camera</h2>
+      <p class="text-xs text-slate-300 max-w-xs mb-5 leading-relaxed">
+        Tap the button below to allow camera access for real-time swing plane and posture tracking on the range.
+      </p>
+      <button id="btn-request-cam-perm" class="px-6 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-900/50 active:scale-95 transition flex items-center gap-2">
+        <i data-lucide="video" class="w-4 h-4"></i>
+        <span>Start live camera</span>
+      </button>
+      <button id="btn-skip-cam" class="mt-3 text-[11px] text-slate-400 underline underline-offset-2">
+        Continue in simulation mode
+      </button>
+    </div>
+
+    <!-- Framing Reticle -->
+    <div id="framing-reticle" class="absolute inset-0 pointer-events-none flex items-center justify-center z-10 transition-opacity duration-300">
+      <div class="relative w-[88%] max-w-sm h-[82%] border-2 border-dashed border-emerald-500/40 rounded-3xl animate-target-box flex flex-col justify-between p-3">
+        <div class="flex justify-between items-center text-[9px] sm:text-[10px] font-mono text-emerald-400 font-bold bg-slate-950/85 backdrop-blur px-2 py-1 rounded-lg border border-emerald-500/30">
+          <span>DTL TARGET ZONE</span>
+          <span>HEAD LEVEL ↓</span>
+        </div>
+        <div class="w-20 h-20 sm:w-24 sm:h-24 border border-sky-400/60 rounded-full mx-auto -mt-6 border-dashed flex items-center justify-center text-[9px] sm:text-[10px] text-sky-400 font-mono font-bold bg-sky-950/20">
+          HEAD ZONE
+        </div>
+        <div class="flex justify-between items-center text-[9px] sm:text-[10px] font-mono text-emerald-400 font-bold bg-slate-950/85 backdrop-blur px-2 py-1 rounded-lg border border-emerald-500/30">
+          <span>MAT / BALL LINE ↑</span>
+          <span>FEET / TOE LINE</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="lock-flash-overlay" class="hidden absolute inset-0 bg-emerald-500/30 pointer-events-none z-20 animate-lock-flash"></div>
+
+    <!-- Countdown -->
+    <div id="countdown-overlay" class="hidden absolute inset-0 bg-black/80 backdrop-blur-sm z-30 flex flex-col items-center justify-center pointer-events-none">
+      <div class="flex flex-col items-center gap-2 text-center px-4">
+        <p class="text-emerald-400 text-xs sm:text-sm uppercase tracking-widest font-bold">Step into address position</p>
+        <span id="countdown-number" class="text-7xl sm:text-9xl font-black text-white drop-shadow-[0_0_25px_#10b981] animate-countdown-num">5</span>
+        <div class="flex items-center gap-2 mt-2 bg-slate-900/90 px-4 py-2 rounded-full border border-slate-700 shadow-xl">
+          <span id="stability-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
+          <span id="stability-text" class="text-xs text-slate-200 font-medium">Settle address posture</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scanning -->
+    <div id="scan-overlay" class="hidden absolute inset-0 bg-emerald-950/60 backdrop-blur-[2px] pointer-events-none z-20 flex flex-col items-center justify-center">
+      <div class="w-4/5 max-w-md h-1 bg-emerald-400 shadow-[0_0_25px_#10b981] animate-scan rounded-full"></div>
+      <div class="relative w-52 h-52 sm:w-60 sm:h-60 border border-emerald-500/50 rounded-2xl flex flex-col items-center justify-center mt-3 bg-slate-950/80 shadow-2xl p-4">
+        <div class="absolute inset-2 border border-dashed border-emerald-400/50 rounded-xl animate-pulse"></div>
+        <div class="w-10 h-10 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin mb-3"></div>
+        <div id="scan-overlay-title" class="font-mono text-xs text-emerald-300 font-bold tracking-wider text-center">AI STANCE SCANNING</div>
+        <div id="scan-burst-progress" class="font-mono text-[11px] text-emerald-400/80 mt-1 text-center px-2">Locking alignment</div>
+      </div>
+    </div>
+
+    <div id="delay-indicator" class="hidden absolute top-4 left-4 bg-amber-500 text-slate-950 font-bold text-xs px-3 py-1 rounded-full backdrop-blur shadow-xl flex items-center gap-1.5 z-20">
+      <span class="w-2 h-2 rounded-full bg-slate-950 animate-ping"></span>
+      <span id="delay-badge-text">3.0s delayed replay</span>
+    </div>
+
+    <!-- Calibration Status -->
+    <div id="plane-status-badge" class="absolute top-3 left-3 max-w-[55%] bg-slate-900/90 backdrop-blur border border-slate-700 text-emerald-400 font-semibold text-xs px-2.5 py-1.5 rounded-lg shadow-lg flex items-center gap-2 z-20">
+      <i data-lucide="check-check" class="w-4 h-4 text-emerald-400 shrink-0"></i>
+      <div class="flex flex-col min-w-0">
+        <span id="plane-status-text" class="text-[11px] font-bold text-white truncate">Shaft: dynamic, ready</span>
+        <span id="accuracy-score-text" class="text-[10px] text-emerald-400 font-mono truncate">Custom player angle</span>
+      </div>
+    </div>
+
+    <!-- Guide Toggles -->
+    <div class="absolute top-3 right-3 flex flex-col gap-1.5 sm:gap-2 z-20">
+      <button id="btn-guide-plane" class="p-2 sm:p-2.5 rounded-xl bg-slate-900/85 backdrop-blur border border-emerald-500/60 text-emerald-400 hover:text-white transition shadow-lg active:scale-95" title="Shaft Plane Line">
+        <i data-lucide="trending-up" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+      </button>
+      <button id="btn-guide-corridor" class="p-2 sm:p-2.5 rounded-xl bg-slate-900/85 backdrop-blur border border-amber-500/60 text-amber-400 hover:text-white transition shadow-lg active:scale-95" title="Hogan Shoulder/Elbow Corridor">
+        <i data-lucide="layers" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+      </button>
+      <button id="btn-guide-head" class="p-2 sm:p-2.5 rounded-xl bg-slate-900/85 backdrop-blur border border-sky-500/60 text-sky-400 hover:text-white transition shadow-lg active:scale-95" title="Head Stability Ring">
+        <i data-lucide="circle-dot" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+      </button>
+      <button id="btn-guide-hip" class="p-2 sm:p-2.5 rounded-xl bg-slate-900/85 backdrop-blur border border-purple-500/60 text-purple-400 hover:text-white transition shadow-lg active:scale-95" title="Tush Line (Early Extension)">
+        <i data-lucide="align-vertical-space-around" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+      </button>
+      <button id="btn-reset-guides" class="p-2 sm:p-2.5 rounded-xl bg-slate-900/85 backdrop-blur border border-slate-700 text-slate-400 hover:text-white transition shadow-lg active:scale-95" title="Reset Guides to Preset">
+        <i data-lucide="rotate-ccw" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+      </button>
+    </div>
+
+    <!-- Tush Line Widget -->
+    <div id="tush-adjust-widget" class="absolute bottom-14 right-3 bg-slate-900/90 backdrop-blur border border-purple-500/50 rounded-xl p-2 z-20 flex flex-col gap-1.5 shadow-xl">
+      <div class="text-[10px] font-bold text-purple-300 uppercase tracking-wider flex items-center justify-between gap-2">
+        <span class="flex items-center gap-1">
+          <i data-lucide="align-vertical-space-around" class="w-3 h-3 text-purple-400"></i>
+          <span>Tush line</span>
+        </span>
+        <span id="tush-val-display" class="text-xs font-mono font-bold text-purple-200">62%</span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <button id="btn-tush-left" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-purple-300 rounded-lg text-xs font-bold border border-slate-700 active:scale-95 transition flex items-center gap-1" title="Nudge Tush Line Left">
+          <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i>
+        </button>
+        <button id="btn-tush-right" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-purple-300 rounded-lg text-xs font-bold border border-slate-700 active:scale-95 transition flex items-center gap-1" title="Nudge Tush Line Right">
+          <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Diagnostics -->
+    <div id="diagnostics-pill" class="absolute bottom-2 left-2 max-w-[60%] bg-slate-900/90 backdrop-blur border border-slate-800 rounded-lg px-2.5 py-1 text-[10px] text-slate-300 pointer-events-none flex items-center gap-2">
+      <span id="cam-active-dot" class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
+      <span id="cam-diag-text" class="truncate">Camera: waiting to start</span>
+    </div>
+  </main>
+
+  <!-- Bottom Controls -->
+  <footer class="bg-slate-900 border-t border-slate-800 px-3 py-2.5 z-30 shrink-0">
+    <div class="max-w-xl mx-auto flex items-center justify-between gap-3">
+      <div class="flex items-center gap-1.5 shrink-0">
+        <button id="btn-mode-live" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition">
+          Live
+        </button>
+        <button id="btn-mode-delay" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition">
+          Delayed
+        </button>
+      </div>
+
+      <div id="delay-controls" class="flex-1 flex items-center justify-end gap-2 opacity-50 pointer-events-none transition-opacity min-w-0">
+        <label for="delay-slider" class="text-[11px] text-slate-400 whitespace-nowrap">Delay <span id="delay-label" class="font-bold text-amber-400">3.0s</span></label>
+        <input id="delay-slider" type="range" min="1" max="8" step="0.5" value="3" class="w-20 sm:w-32 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+      </div>
+    </div>
+  </footer>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md max-h-[85dvh] overflow-y-auto shadow-2xl">
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60 sticky top-0">
+        <div class="flex items-center space-x-2">
+          <div class="p-1.5 bg-emerald-500/20 text-emerald-400 rounded-md">
+            <i data-lucide="settings" class="w-5 h-5"></i>
+          </div>
+          <h3 class="text-sm font-bold text-white">Detection and camera settings</h3>
+        </div>
+        <button id="btn-close-settings" class="p-2 rounded-lg text-slate-400 hover:text-white bg-slate-800/80">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4 text-xs">
+        <div class="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl space-y-1.5 text-slate-300">
+          <div class="font-bold text-emerald-400 flex items-center gap-1.5">
+            <i data-lucide="cpu" class="w-4 h-4"></i> Gemini vision
+          </div>
+          <p class="text-[11px] text-slate-300 leading-relaxed">
+            Add a Gemini API key to enable cloud vision analysis. Without a key the app uses the built-in geometric fallback, which still works for guides and drills.
+          </p>
+        </div>
+
+        <div class="space-y-2">
+          <label for="input-api-key" class="block font-bold text-slate-200">
+            Gemini API key
+          </label>
+          <input
+            id="input-api-key"
+            type="password"
+            autocomplete="off"
+            placeholder="AIzaSy..."
+            class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 font-mono"
+          />
+          <p class="text-[10px] text-slate-400">
+            Stored in this browser only. Anyone with access to this device can read it.
+          </p>
+        </div>
+
+        <div class="space-y-2">
+          <label for="select-model" class="block font-bold text-slate-200">Vision model</label>
+          <select id="select-model" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500">
+            <option value="gemini-3.7-flash">3.7 Flash (recommended)</option>
+            <option value="gemini-3-pro-preview">3 Pro Preview (slowest, deepest)</option>
+            <option value="gemini-3-flash-preview">3 Flash Preview (legacy)</option>
+          </select>
+          <p class="text-[10px] text-slate-400">
+            Stance scans run at low thinking effort for speed. Coach reviews run at medium for accuracy.
+          </p>
+        </div>
+
+        <div class="flex justify-between items-center pt-2 gap-2">
+          <button id="btn-force-cam-restart" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold active:scale-95 transition">
+            Restart camera
+          </button>
+          <button id="btn-save-settings" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 font-bold text-white rounded-xl shadow active:scale-95 transition">
+            Save settings
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Coach Modal -->
+  <div id="ai-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 hidden transition-opacity">
+    <div class="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl w-full max-w-lg max-h-[88dvh] flex flex-col overflow-hidden shadow-2xl">
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/50 shrink-0">
+        <div class="flex items-center space-x-2">
+          <div class="p-1.5 bg-emerald-500/20 text-emerald-400 rounded-md">
+            <i data-lucide="sparkles" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-white">Swing review</h3>
+            <p class="text-[11px] text-slate-400">Biomechanical breakdown</p>
+          </div>
+        </div>
+        <button id="btn-close-modal" class="p-2 rounded-lg text-slate-400 hover:text-white bg-slate-800/80">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-4 overflow-y-auto space-y-4 text-sm">
+        <div class="relative rounded-xl overflow-hidden border border-slate-800 bg-black h-40 sm:h-44 flex items-center justify-center">
+          <img id="ai-captured-img" src="" alt="Captured swing frame" class="h-full w-full object-contain" />
+          <div id="ai-loader" class="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+            <div class="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+            <p class="text-xs text-emerald-400 font-medium">Reviewing plane and glute depth</p>
+          </div>
+        </div>
+
+        <div id="ai-content-body" class="space-y-3 hidden">
+          <div class="flex items-center justify-between gap-2 p-3 bg-slate-800/70 border border-slate-700/60 rounded-xl">
+            <span class="text-xs font-medium text-slate-300 shrink-0">Score</span>
+            <span id="ai-score" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-right">
+              —
+            </span>
+          </div>
+
+          <div class="space-y-2 text-xs text-slate-300">
+            <div class="p-3 bg-slate-800/40 border border-slate-800 rounded-xl">
+              <h4 class="font-semibold text-emerald-400 mb-1 flex items-center gap-1.5">
+                <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Setup and pelvic depth
+              </h4>
+              <p id="ai-setup-text" class="text-slate-300 leading-relaxed"></p>
+            </div>
+
+            <div class="p-3 bg-slate-800/40 border border-slate-800 rounded-xl">
+              <h4 class="font-semibold text-amber-400 mb-1 flex items-center gap-1.5">
+                <i data-lucide="alert-circle" class="w-3.5 h-3.5"></i> Shaft plane and corridor
+              </h4>
+              <p id="ai-plane-text" class="text-slate-300 leading-relaxed"></p>
+            </div>
+
+            <div class="p-3 bg-slate-800/40 border border-slate-800 rounded-xl">
+              <h4 class="font-semibold text-sky-400 mb-1 flex items-center gap-1.5">
+                <i data-lucide="zap" class="w-3.5 h-3.5"></i> Rehearsal drill
+              </h4>
+              <p id="ai-drill-text" class="text-slate-300 leading-relaxed"></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-3 border-t border-slate-800 bg-slate-950 flex justify-end gap-2 shrink-0">
+        <button id="btn-re-analyze" class="px-4 py-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition active:scale-95">
+          Take new snapshot
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast-box" class="fixed top-16 left-1/2 -translate-x-1/2 max-w-[90vw] bg-slate-900/95 border border-slate-700 text-white text-xs px-4 py-2.5 rounded-xl shadow-2xl z-50 hidden transition-all duration-300 flex items-center gap-2 backdrop-blur">
+    <i data-lucide="info" class="w-4 h-4 text-emerald-400 shrink-0"></i>
+    <span id="toast-text">Message</span>
+  </div>
+
+  <script>
+    "use strict";
+
+    // ---------- State ----------
+    let userApiKey = "";
+    try { userApiKey = localStorage.getItem("golf_gemini_api_key") || ""; } catch (e) {}
+
+    let videoStream = null;
+    let currentFacingMode = "environment";
+    let isMirrored = false;
+    let appMode = "live";
+    let delaySeconds = 3.0;
+    let isSimulatedFeed = true;   // start in sim until user grants camera
+    let simAngle = 0;
+    let showFramingReticle = true;
+
+    const STANCE_PROFILES = [
+      { id: "righty_dtl", label: "Righty DTL", gluteSide: "right", clubSide: "left" },
+      { id: "lefty_dtl",  label: "Lefty DTL",  gluteSide: "left",  clubSide: "right" },
+      { id: "face_on",    label: "Face-On",    gluteSide: "center", clubSide: "center" }
+    ];
+    let currentStanceIndex = 0;
+
+    const timerDurations = [3, 5, 8, 12];
+    let selectedTimerIndex = 1;
+    let isCountingDown = false;
+    let countdownTimerId = null;
+    let lastFramePixels = null;
+
+    const frameBuffer = [];
+    const MAX_BUFFER_SECONDS = 8;
+    const BUFFER_FPS = 20;
+    let lastBufferPushTime = 0;
+    let bufferBusy = false;
+
+    const guides = {
+      planeLine: { enabled: true, start: { x: 0.35, y: 0.84 }, end: { x: 0.68, y: 0.22 } },
+      corridor:  { enabled: true, offsetPx: 45 },
+      headBox:   { enabled: true, x: 0.50, y: 0.28, radius: 0.075 },
+      hipLine:   { enabled: true, x: 0.62, y: 0.52 }
+    };
+
+    let activeDragHandle = null;
+
+    // Canvas geometry: the rect the video is actually drawn into (CSS px, unmirrored)
+    let videoRect = { x: 0, y: 0, w: 0, h: 0 };
+
+    // ---------- Audio ----------
+    let audioCtx = null;
+    function unlockMobileAudio() {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        if ("speechSynthesis" in window && window.speechSynthesis.paused) window.speechSynthesis.resume();
+      } catch (e) {}
+    }
+
+    function playBeep(freq, duration) {
+      freq = freq || 440; duration = duration || 0.12;
+      try {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+      } catch (e) {}
+    }
+
+    function speakVoice(text) {
+      if (!("speechSynthesis" in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.05;
+        window.speechSynthesis.speak(u);
+      } catch (e) {}
+    }
+
+    function playSuccessChime() {
+      try {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(587.33, audioCtx.currentTime);
+        osc.frequency.setValueAtTime(880.00, audioCtx.currentTime + 0.12);
+        gain.gain.setValueAtTime(0.35, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.4);
+      } catch (e) {}
+    }
+
+    // ---------- DOM ----------
+    const $ = (id) => document.getElementById(id);
+
+    const video = $("webcam");
+    const canvas = $("main-canvas");
+    const ctx = canvas.getContext("2d");
+
+    const streamStatusText = $("stream-status-text");
+    const camActiveDot = $("cam-active-dot");
+    const camDiagText = $("cam-diag-text");
+    const btnStanceProfile = $("btn-stance-profile");
+    const stanceProfileLabel = $("stance-profile-label");
+    const btnCamSource = $("btn-cam-source");
+    const btnToggleMirror = $("btn-toggle-mirror");
+    const btnToggleGuideBox = $("btn-toggle-guide-box");
+    const framingReticle = $("framing-reticle");
+    const cameraPromptOverlay = $("camera-prompt-overlay");
+    const btnRequestCamPerm = $("btn-request-cam-perm");
+    const btnSkipCam = $("btn-skip-cam");
+    const btnAiAnalyze = $("btn-ai-analyze");
+    const scanOverlay = $("scan-overlay");
+    const scanBurstProgress = $("scan-burst-progress");
+    const planeStatusText = $("plane-status-text");
+    const accuracyScoreText = $("accuracy-score-text");
+    const lockFlashOverlay = $("lock-flash-overlay");
+
+    const btnTimerTrigger = $("btn-timer-trigger");
+    const timerBtnText = $("timer-btn-text");
+    const btnInstantScan = $("btn-instant-scan");
+    const btnTimerConfig = $("btn-timer-config");
+    const timerConfigLabel = $("timer-config-label");
+    const countdownOverlay = $("countdown-overlay");
+    const countdownNumber = $("countdown-number");
+    const stabilityDot = $("stability-dot");
+    const stabilityText = $("stability-text");
+
+    const btnModeLive = $("btn-mode-live");
+    const btnModeDelay = $("btn-mode-delay");
+    const delayControls = $("delay-controls");
+    const delaySlider = $("delay-slider");
+    const delayLabel = $("delay-label");
+    const delayIndicator = $("delay-indicator");
+    const delayBadgeText = $("delay-badge-text");
+
+    const btnGuidePlane = $("btn-guide-plane");
+    const btnGuideCorridor = $("btn-guide-corridor");
+    const btnGuideHead = $("btn-guide-head");
+    const btnGuideHip = $("btn-guide-hip");
+    const btnResetGuides = $("btn-reset-guides");
+
+    const btnTushLeft = $("btn-tush-left");
+    const btnTushRight = $("btn-tush-right");
+    const tushValDisplay = $("tush-val-display");
+
+    const settingsModal = $("settings-modal");
+    const btnOpenSettings = $("btn-open-settings");
+    const btnCloseSettings = $("btn-close-settings");
+    const inputApiKey = $("input-api-key");
+    const selectModel = $("select-model");
+    const btnSaveSettings = $("btn-save-settings");
+    const btnForceCamRestart = $("btn-force-cam-restart");
+
+    const aiModal = $("ai-modal");
+    const btnCloseModal = $("btn-close-modal");
+    const btnReAnalyze = $("btn-re-analyze");
+    const aiCapturedImg = $("ai-captured-img");
+    const aiLoader = $("ai-loader");
+    const aiContentBody = $("ai-content-body");
+    const aiScore = $("ai-score");
+    const aiSetupText = $("ai-setup-text");
+    const aiPlaneText = $("ai-plane-text");
+    const aiDrillText = $("ai-drill-text");
+
+    // ---------- Camera ----------
+    async function initCamera() {
+      if (videoStream) {
+        try { videoStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+        videoStream = null;
+      }
+
+      if (!window.isSecureContext) {
+        enableSimulationMode("needs HTTPS");
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        enableSimulationMode("not supported in this browser");
+        return;
+      }
+
+      streamStatusText.textContent = "Connecting camera";
+      camActiveDot.className = "w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0";
+      camDiagText.textContent = "Camera: requesting permission";
+
+      const constraintOptions = [
+        { video: { facingMode: { ideal: currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+        { video: { facingMode: currentFacingMode }, audio: false },
+        { video: true, audio: false }
+      ];
+
+      let stream = null;
+      let lastErr = null;
+      for (const c of constraintOptions) {
+        try { stream = await navigator.mediaDevices.getUserMedia(c); if (stream) break; }
+        catch (err) { lastErr = err; }
+      }
+
+      if (!stream) {
+        cameraPromptOverlay.classList.remove("hidden");
+        const reason = lastErr && lastErr.name === "NotAllowedError" ? "permission denied" : "camera unavailable";
+        enableSimulationMode(reason);
+        return;
+      }
+
+      try {
+        videoStream = stream;
+        video.srcObject = stream;
+        video.setAttribute("playsinline", "true");
+        video.muted = true;
+        await video.play();
+
+        isSimulatedFeed = false;
+        clearFrameBuffer();
+        cameraPromptOverlay.classList.add("hidden");
+
+        const track = stream.getVideoTracks()[0];
+        const s = track ? track.getSettings() : {};
+        const resW = s.width || video.videoWidth || 1280;
+        const resH = s.height || video.videoHeight || 720;
+        const facingLabel = currentFacingMode === "environment" ? "Rear DTL" : "Front";
+
+        streamStatusText.textContent = facingLabel + " live";
+        camActiveDot.className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0";
+        camDiagText.textContent = "Camera: " + facingLabel + " " + resW + "x" + resH;
+        showToast("Camera connected: " + facingLabel);
+      } catch (playErr) {
+        enableSimulationMode("playback blocked");
+      }
+    }
+
+    function enableSimulationMode(reason) {
+      isSimulatedFeed = true;
+      clearFrameBuffer();
+      streamStatusText.textContent = "Simulation mode";
+      camActiveDot.className = "w-2 h-2 rounded-full bg-sky-400 shrink-0";
+      camDiagText.textContent = "Camera: simulation" + (reason ? " (" + reason + ")" : "");
+    }
+
+    function clearFrameBuffer() {
+      while (frameBuffer.length) {
+        const f = frameBuffer.shift();
+        if (f && f.bitmap && f.bitmap.close) { try { f.bitmap.close(); } catch (e) {} }
+      }
+    }
+
+    // ---------- Stance ----------
+    function applyStanceCoordinates(profile) {
+      if (profile.id === "righty_dtl") {
+        guides.planeLine.start = { x: 0.35, y: 0.84 };
+        guides.planeLine.end = { x: 0.68, y: 0.22 };
+        guides.headBox.x = 0.50; guides.hipLine.x = 0.62;
+      } else if (profile.id === "lefty_dtl") {
+        guides.planeLine.start = { x: 0.65, y: 0.84 };
+        guides.planeLine.end = { x: 0.32, y: 0.22 };
+        guides.headBox.x = 0.50; guides.hipLine.x = 0.38;
+      } else {
+        guides.planeLine.start = { x: 0.48, y: 0.84 };
+        guides.planeLine.end = { x: 0.48, y: 0.22 };
+        guides.headBox.x = 0.50; guides.hipLine.x = 0.58;
+      }
+      tushValDisplay.textContent = Math.round(guides.hipLine.x * 100) + "%";
+      updatePlaneAngleBadge();
+    }
+
+    // ---------- Stability ----------
+    const stabCanvas = document.createElement("canvas");
+    stabCanvas.width = 64; stabCanvas.height = 64;
+    const stabCtx = stabCanvas.getContext("2d", { willReadFrequently: true });
+
+    function checkAddressStability() {
+      try {
+        stabCtx.drawImage(canvas, 0, 0, 64, 64);
+        const data = stabCtx.getImageData(0, 0, 64, 64).data;
+        if (!lastFramePixels) { lastFramePixels = new Uint8ClampedArray(data); return false; }
+        let diff = 0;
+        for (let i = 0; i < data.length; i += 16) diff += Math.abs(data[i] - lastFramePixels[i]);
+        lastFramePixels = new Uint8ClampedArray(data);
+        return (diff / (64 * 64 / 4)) < 14;
+      } catch (e) { return true; }
+    }
+
+    // ---------- Timer ----------
+    function startHandsFreeTimer() {
+      unlockMobileAudio();
+      if (isCountingDown) { cancelHandsFreeTimer(); return; }
+
+      const totalSeconds = timerDurations[selectedTimerIndex];
+      let remaining = totalSeconds;
+
+      isCountingDown = true;
+      lastFramePixels = null;
+      btnTimerTrigger.classList.remove("bg-emerald-600", "hover:bg-emerald-500");
+      btnTimerTrigger.classList.add("bg-red-600", "hover:bg-red-500");
+      timerBtnText.textContent = "Cancel";
+
+      countdownOverlay.classList.remove("hidden");
+      countdownNumber.textContent = remaining;
+      stabilityText.textContent = "Step into the stance frame";
+      stabilityDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping";
+
+      speakVoice("Setting up in " + totalSeconds + " seconds");
+      playBeep(523.25, 0.15);
+
+      countdownTimerId = setInterval(() => {
+        remaining -= 1;
+        if (remaining > 0) {
+          countdownNumber.textContent = remaining;
+          if (checkAddressStability()) {
+            stabilityText.textContent = "Address steady, locking";
+            stabilityDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400";
+          } else {
+            stabilityText.textContent = "Hold still";
+            stabilityDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping";
+          }
+          if (remaining <= 3) { playBeep(659.25, 0.2); speakVoice(String(remaining)); }
+          else { playBeep(440, 0.1); }
+        } else {
+          clearInterval(countdownTimerId);
+          countdownTimerId = null;
+          countdownOverlay.classList.add("hidden");
+          resetTimerButton();
+          playBeep(880, 0.25);
+          executeMultiFrameBurstScan();
+        }
+      }, 1000);
+    }
+
+    function cancelHandsFreeTimer() {
+      if (countdownTimerId) { clearInterval(countdownTimerId); countdownTimerId = null; }
+      countdownOverlay.classList.add("hidden");
+      resetTimerButton();
+      showToast("Timer cancelled");
+    }
+
+    function resetTimerButton() {
+      isCountingDown = false;
+      btnTimerTrigger.classList.remove("bg-red-600", "hover:bg-red-500");
+      btnTimerTrigger.classList.add("bg-emerald-600", "hover:bg-emerald-500");
+      timerBtnText.textContent = "Lock (" + timerDurations[selectedTimerIndex] + "s)";
+    }
+
+    // ---------- Gemini call helper ----------
+    // Note: Gemini 3.x rejects temperature / top_p / top_k. Do not add them back.
+    const GEMINI_MODELS = [
+      { id: "gemini-3.7-flash",       label: "3.7 Flash (recommended)" },
+      { id: "gemini-3-pro-preview",   label: "3 Pro Preview (slowest, deepest)" },
+      { id: "gemini-3-flash-preview", label: "3 Flash Preview (legacy)" }
+    ];
+    let geminiModel = "gemini-3.7-flash";
+    try {
+      const saved = localStorage.getItem("golf_gemini_model");
+      if (saved && GEMINI_MODELS.some(m => m.id === saved)) geminiModel = saved;
+    } catch (e) {}
+
+    async function callGemini(prompt, base64Data, timeoutMs, thinkingLevel) {
+      if (!userApiKey) return null;
+      const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
+                  geminiModel + ":generateContent";
+
+      const generationConfig = { responseMimeType: "application/json" };
+      // thinking_level is a Gemini 3.x feature; harmless if the model ignores it.
+      if (thinkingLevel) generationConfig.thinking_level = thinkingLevel;
+
+      const payload = {
+        contents: [{
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: "image/jpeg", data: base64Data } }
+          ]
+        }],
+        generationConfig: generationConfig
+      };
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs || 20000);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": userApiKey
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.text()).slice(0, 200); } catch (e2) {}
+          console.warn("Gemini HTTP " + res.status, detail);
+          lastGeminiError = "HTTP " + res.status + " on " + geminiModel;
+          return null;
+        }
+        const json = await res.json();
+        const raw = json && json.candidates && json.candidates[0] &&
+                    json.candidates[0].content && json.candidates[0].content.parts &&
+                    json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text;
+        if (!raw) { lastGeminiError = "Empty response"; return null; }
+        lastGeminiError = "";
+        return JSON.parse(raw.replace(/```json/g, "").replace(/```/g, "").trim());
+      } catch (e) {
+        clearTimeout(timeoutId);
+        const name = e && e.name;
+        lastGeminiError = name === "AbortError" ? "Timed out" : "Request failed";
+        console.warn("Gemini call failed:", name);
+        return null;
+      }
+    }
+
+    let lastGeminiError = "";
+
+    // Snapshot only the video region, without guide overlays baked in
+    function snapshotFrame() {
+      try {
+        const dpr = window.devicePixelRatio || 1;
+        const sx = videoRect.x * dpr, sy = videoRect.y * dpr;
+        const sw = Math.max(1, videoRect.w * dpr), sh = Math.max(1, videoRect.h * dpr);
+        const out = document.createElement("canvas");
+        out.width = Math.min(1024, sw);
+        out.height = Math.round(out.width * (sh / sw));
+        out.getContext("2d").drawImage(canvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+        return out.toDataURL("image/jpeg", 0.85);
+      } catch (e) {
+        return canvas.toDataURL("image/jpeg", 0.85);
+      }
+    }
+
+    // ---------- Scan ----------
+    async function executeMultiFrameBurstScan() {
+      scanOverlay.classList.remove("hidden");
+      scanBurstProgress.textContent = userApiKey ? "Analyzing address stance" : "Using geometric fallback";
+
+      const profile = STANCE_PROFILES[currentStanceIndex];
+      const isLefty = profile.gluteSide === "left";
+
+      const detected = {
+        clubHead:  { x: isLefty ? 0.65 : 0.35, y: 0.84 },
+        gripHands: { x: isLefty ? 0.52 : 0.48, y: 0.58 },
+        headCenter:{ x: 0.50, y: 0.28 },
+        tushLineX: isLefty ? 0.38 : 0.62,
+        confidence: 70
+      };
+
+      const snapshotUrl = snapshotFrame();
+      const base64Data = snapshotUrl.split(",")[1] || "";
+
+      const prompt = "You are a golf computer vision system analyzing an address posture frame (" + profile.label + ").\n" +
+        "Return normalized 2D coordinates (0.0-1.0, top-left origin) for this player's actual setup:\n" +
+        "1. clubHead: the clubhead on the ground\n" +
+        "2. gripHands: center of the hands on the grip\n" +
+        "3. headCenter: center of the head\n" +
+        "4. tushLineX: outermost lateral silhouette edge of the glutes\n" +
+        "5. shaftAngleDegrees: measured shaft angle to horizontal. Do not snap to 45/50/55.\n" +
+        'Return only JSON: {"detected":true,"clubHead":{"x":0.35,"y":0.84},"gripHands":{"x":0.48,"y":0.58},' +
+        '"headCenter":{"x":0.5,"y":0.28},"tushLineX":0.62,"shaftAngleDegrees":49.2,"confidence":98}';
+
+      // Low thinking: coordinate localization is a perception task, and the
+      // golfer is holding a stance while this runs. Speed matters here.
+      const ai = await callGemini(prompt, base64Data, 20000, "low");
+      if (ai && ai.detected) {
+        if (ai.clubHead) detected.clubHead = ai.clubHead;
+        if (ai.gripHands) detected.gripHands = ai.gripHands;
+        if (ai.headCenter) detected.headCenter = ai.headCenter;
+        if (ai.tushLineX) detected.tushLineX = Number(ai.tushLineX);
+        detected.confidence = Number(ai.confidence) || 95;
+      }
+
+      scanOverlay.classList.add("hidden");
+
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
+      const chX = clamp(detected.clubHead.x, 0.05, 0.95);
+      const chY = clamp(detected.clubHead.y, 0.60, 0.95);
+      const ghX = clamp(detected.gripHands.x, 0.05, 0.95);
+      const ghY = clamp(detected.gripHands.y, 0.40, 0.80);
+      const headX = clamp(detected.headCenter.x, 0.10, 0.90);
+      const headY = clamp(detected.headCenter.y, 0.12, 0.45);
+      const tushX = clamp(detected.tushLineX, 0.05, 0.95);
+
+      const ext = 2.4;
+      const topX = clamp(chX + (ghX - chX) * ext, 0.05, 0.95);
+      const topY = clamp(chY + (ghY - chY) * ext, 0.05, 0.95);
+
+      guides.planeLine.start = { x: chX, y: chY };
+      guides.planeLine.end = { x: topX, y: topY };
+      guides.planeLine.enabled = true;
+      guides.corridor.enabled = true;
+      guides.headBox.x = headX; guides.headBox.y = headY; guides.headBox.enabled = true;
+      guides.hipLine.x = tushX; guides.hipLine.y = 0.52; guides.hipLine.enabled = true;
+
+      tushValDisplay.textContent = Math.round(tushX * 100) + "%";
+
+      const angle = screenAngleDeg(guides.planeLine.start, guides.planeLine.end);
+      planeStatusText.textContent = "Shaft: " + angle + "° locked";
+      accuracyScoreText.textContent = "Confidence " + detected.confidence + "%";
+
+      lockFlashOverlay.classList.remove("hidden");
+      setTimeout(() => lockFlashOverlay.classList.add("hidden"), 450);
+
+      playSuccessChime();
+      speakVoice("Locked. Shaft at " + angle + " degrees.");
+      showToast("Locked at " + angle + "°");
+    }
+
+    // Angle measured in true screen pixels, so it stays correct on any aspect ratio
+    function screenAngleDeg(p1, p2) {
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
+      const dx = Math.abs((p2.x - p1.x) * w);
+      const dy = Math.abs((p2.y - p1.y) * h);
+      return Math.round(Math.atan2(dy, dx) * (180 / Math.PI) * 10) / 10;
+    }
+
+    // ---------- Simulation ----------
+    function drawSimulationGolfer(w, h) {
+      simAngle += 0.02;
+
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, "#090d16");
+      grad.addColorStop(0.65, "#0d1b2a");
+      grad.addColorStop(1, "#0a2612");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = "rgba(16, 185, 129, 0.15)";
+      ctx.lineWidth = 1;
+      for (let y = h * 0.7; y < h; y += h * 0.07) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+
+      // Scale figure to viewport so it fits on narrow phones
+      const s = Math.min(w, h) / 600;
+      const centerX = w * 0.48;
+      const groundY = h * 0.88;
+
+      ctx.save();
+      ctx.fillStyle = "rgba(30, 41, 59, 0.8)";
+      ctx.fillRect(centerX - w * 0.18, groundY - 5, w * 0.36, 10);
+
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 12 * s;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(centerX - 25 * s, groundY);
+      ctx.lineTo(centerX - 20 * s, groundY - h * 0.22);
+      ctx.lineTo(centerX - 5 * s, groundY - h * 0.38);
+      ctx.stroke();
+
+      ctx.strokeStyle = "#3b82f6";
+      ctx.lineWidth = 16 * s;
+      ctx.beginPath();
+      ctx.moveTo(centerX - 5 * s, groundY - h * 0.38);
+      ctx.lineTo(centerX + 15 * s, groundY - h * 0.58);
+      ctx.stroke();
+
+      ctx.fillStyle = "#f8fafc";
+      ctx.beginPath();
+      ctx.arc(centerX + 18 * s, groundY - h * 0.65, 20 * s, 0, Math.PI * 2);
+      ctx.fill();
+
+      const clubSway = Math.sin(simAngle) * 35 * s;
+      const handX = centerX - 10 * s + clubSway * 0.3;
+      const handY = groundY - h * 0.35;
+
+      ctx.strokeStyle = "#cbd5e1";
+      ctx.lineWidth = 8 * s;
+      ctx.beginPath();
+      ctx.moveTo(centerX + 15 * s, groundY - h * 0.55);
+      ctx.lineTo(handX, handY);
+      ctx.stroke();
+
+      const ballX = centerX - 60 * s;
+      const ballY = groundY - 12 * s;
+
+      ctx.strokeStyle = "#e2e8f0";
+      ctx.lineWidth = 4 * s;
+      ctx.beginPath();
+      ctx.moveTo(handX, handY);
+      ctx.lineTo(ballX + clubSway, ballY);
+      ctx.stroke();
+
+      ctx.fillStyle = "#10b981";
+      ctx.fillRect(ballX + clubSway - 10 * s, ballY - 6 * s, 16 * s, 8 * s);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(ballX, ballY, 6 * s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ---------- Render ----------
+    function resizeCanvas() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap at 2x, 3x kills mobile GPUs
+      const cssW = canvas.clientWidth;
+      const cssH = canvas.clientHeight;
+      if (!cssW || !cssH) return false;
+      const needW = Math.round(cssW * dpr);
+      const needH = Math.round(cssH * dpr);
+      if (canvas.width !== needW || canvas.height !== needH) {
+        canvas.width = needW;
+        canvas.height = needH;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+      return true;
+    }
+
+    // Draw a source into the canvas preserving its aspect ratio (contain)
+    function drawContain(source, srcW, srcH, w, h) {
+      if (!srcW || !srcH) return;
+      const scale = Math.min(w / srcW, h / srcH);
+      const dw = srcW * scale;
+      const dh = srcH * scale;
+      const dx = (w - dw) / 2;
+      const dy = (h - dh) / 2;
+      videoRect = { x: dx, y: dy, w: dw, h: dh };
+      ctx.drawImage(source, dx, dy, dw, dh);
+    }
+
+    function render() {
+      requestAnimationFrame(render);
+      if (!resizeCanvas()) return;
+
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      const now = performance.now();
+
+      const liveReady = !isSimulatedFeed && videoStream && video.videoWidth > 0 && video.readyState >= 2;
+
+      // Buffer frames for delayed replay, only while in delay mode
+      if (liveReady && appMode === "delay" && !bufferBusy &&
+          now - lastBufferPushTime > 1000 / BUFFER_FPS &&
+          typeof createImageBitmap !== "undefined") {
+        lastBufferPushTime = now;
+        bufferBusy = true;
+        createImageBitmap(video)
+          .then(bitmap => { frameBuffer.push({ timestamp: performance.now(), bitmap }); })
+          .catch(() => {})
+          .finally(() => { bufferBusy = false; });
+      }
+
+      // Prune every frame regardless of async outcome
+      const maxKeep = MAX_BUFFER_SECONDS * 1000;
+      while (frameBuffer.length && now - frameBuffer[0].timestamp > maxKeep) {
+        const old = frameBuffer.shift();
+        if (old.bitmap && old.bitmap.close) { try { old.bitmap.close(); } catch (e) {} }
+      }
+      if (appMode !== "delay" && frameBuffer.length) clearFrameBuffer();
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.save();
+      if (isMirrored) { ctx.translate(w, 0); ctx.scale(-1, 1); }
+
+      if (!liveReady) {
+        videoRect = { x: 0, y: 0, w: w, h: h };
+        drawSimulationGolfer(w, h);
+      } else if (appMode === "live" || frameBuffer.length === 0) {
+        drawContain(video, video.videoWidth, video.videoHeight, w, h);
+      } else {
+        const targetTime = now - delaySeconds * 1000;
+        let frame = frameBuffer[0];
+        for (let i = frameBuffer.length - 1; i >= 0; i--) {
+          if (frameBuffer[i].timestamp <= targetTime) { frame = frameBuffer[i]; break; }
+        }
+        if (frame && frame.bitmap) drawContain(frame.bitmap, frame.bitmap.width, frame.bitmap.height, w, h);
+        else drawContain(video, video.videoWidth, video.videoHeight, w, h);
+      }
+
+      ctx.restore();
+
+      drawGuides(w, h);
+    }
+
+    function drawGuides(w, h) {
+      const fontScale = Math.max(0.8, Math.min(1.2, w / 500));
+      const handleR = 8 * fontScale;
+
+      if (guides.planeLine.enabled) {
+        const p1 = { x: guides.planeLine.start.x * w, y: guides.planeLine.start.y * h };
+        const p2 = { x: guides.planeLine.end.x * w,   y: guides.planeLine.end.y * h };
+
+        if (guides.corridor.enabled) {
+          ctx.save();
+          const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+          const perp = angle - Math.PI / 2;
+          const off = guides.corridor.offsetPx * (w / 800);
+          const c1 = { x: p1.x + Math.cos(perp) * off, y: p1.y + Math.sin(perp) * off };
+          const c2 = { x: p2.x + Math.cos(perp) * off, y: p2.y + Math.sin(perp) * off };
+
+          ctx.fillStyle = "rgba(16, 185, 129, 0.08)";
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
+          ctx.lineTo(c2.x, c2.y); ctx.lineTo(c1.x, c1.y);
+          ctx.closePath(); ctx.fill();
+
+          ctx.strokeStyle = "rgba(245, 158, 11, 0.85)";
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath(); ctx.moveTo(c1.x, c1.y); ctx.lineTo(c2.x, c2.y); ctx.stroke();
+
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#f59e0b";
+          ctx.font = "bold " + Math.round(11 * fontScale) + "px sans-serif";
+          ctx.fillText("Corridor", c2.x + 8, c2.y + 4);
+          ctx.restore();
+        }
+
+        ctx.save();
+        ctx.strokeStyle = "#10b981";
+        ctx.lineWidth = 3.5;
+        ctx.setLineDash([8, 4]);
+        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#10b981";
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(p1.x, p1.y, handleR, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(p2.x, p2.y, handleR, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+        ctx.fillStyle = "#10b981";
+        ctx.font = "bold " + Math.round(12 * fontScale) + "px sans-serif";
+        ctx.fillText(screenAngleDeg(guides.planeLine.start, guides.planeLine.end) + "°",
+                     p1.x + 14, p1.y - 12);
+        ctx.restore();
+      }
+
+      if (guides.headBox.enabled) {
+        ctx.save();
+        const cx = guides.headBox.x * w;
+        const cy = guides.headBox.y * h;
+        const r = guides.headBox.radius * Math.min(w, h) * 1.4;
+
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.strokeStyle = "rgba(56, 189, 248, 0.6)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
+        ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10); // was drawing a diagonal
+        ctx.stroke();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+        ctx.fillStyle = "#38bdf8";
+        ctx.font = "bold " + Math.round(11 * fontScale) + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Head stability", cx, cy - r - 8);
+        ctx.textAlign = "left";
+        ctx.restore();
+      }
+
+      if (guides.hipLine.enabled) {
+        ctx.save();
+        const hx = guides.hipLine.x * w;
+        const depth = w * 0.06;
+        const wallRight = guides.hipLine.x > 0.5;
+        const g0 = wallRight ? hx : hx - depth;
+        const g1 = wallRight ? hx + depth : hx;
+        const grad = ctx.createLinearGradient(g0, 0, g1, 0);
+        if (wallRight) {
+          grad.addColorStop(0, "rgba(168, 85, 247, 0.25)");
+          grad.addColorStop(1, "rgba(168, 85, 247, 0)");
+        } else {
+          grad.addColorStop(0, "rgba(168, 85, 247, 0)");
+          grad.addColorStop(1, "rgba(168, 85, 247, 0.25)");
+        }
+        ctx.fillStyle = grad;
+        ctx.fillRect(wallRight ? hx : hx - depth, h * 0.15, depth, h * 0.77);
+
+        ctx.strokeStyle = "#a855f7";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 4]);
+        ctx.beginPath(); ctx.moveTo(hx, h * 0.15); ctx.lineTo(hx, h * 0.92); ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#a855f7";
+        ctx.fillRect(hx - 15, h * 0.90, 30, 4);
+
+        ctx.beginPath();
+        ctx.arc(hx, guides.hipLine.y * h, handleR, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#a855f7";
+        ctx.lineWidth = 3.5;
+        ctx.fill(); ctx.stroke();
+
+        ctx.font = "bold " + Math.round(11 * fontScale) + "px sans-serif";
+        ctx.fillStyle = "#c084fc";
+        const label = "Tush line";
+        const lw = ctx.measureText(label).width;
+        const lx = wallRight ? Math.max(4, hx - lw - 16) : Math.min(w - lw - 4, hx + 16);
+        ctx.fillText(label, lx, guides.hipLine.y * h - 14);
+        ctx.restore();
+      }
+    }
+
+    // ---------- Pointer / drag ----------
+    function getCanvasCoords(event) {
+      const rect = canvas.getBoundingClientRect();
+      const t = event.touches && event.touches[0];
+      const clientX = t ? t.clientX : event.clientX;
+      const clientY = t ? t.clientY : event.clientY;
+      let x = (clientX - rect.left) / rect.width;
+      const y = (clientY - rect.top) / rect.height;
+      if (isMirrored) x = 1 - x; // guides are drawn unmirrored, so invert input
+      return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+    }
+
+    function onPointerDown(e) {
+      unlockMobileAudio();
+      const pos = getCanvasCoords(e);
+      const w = canvas.clientWidth || 1;
+      const h = canvas.clientHeight || 1;
+      const hitPx = 30; // generous finger target
+
+      const distPx = (ax, ay) => Math.hypot((pos.x - ax) * w, (pos.y - ay) * h);
+
+      if (guides.headBox.enabled && distPx(guides.headBox.x, guides.headBox.y) < hitPx) {
+        activeDragHandle = "headBox"; return;
+      }
+      if (guides.planeLine.enabled) {
+        if (distPx(guides.planeLine.start.x, guides.planeLine.start.y) < hitPx) { activeDragHandle = "planeStart"; return; }
+        if (distPx(guides.planeLine.end.x, guides.planeLine.end.y) < hitPx) { activeDragHandle = "planeEnd"; return; }
+      }
+      if (guides.hipLine.enabled && Math.abs((pos.x - guides.hipLine.x) * w) < hitPx) {
+        activeDragHandle = "hipLine"; return;
+      }
+    }
+
+    function onPointerMove(e) {
+      if (!activeDragHandle) return;
+      if (e.cancelable) e.preventDefault();
+      const pos = getCanvasCoords(e);
+
+      if (activeDragHandle === "headBox") {
+        guides.headBox.x = pos.x; guides.headBox.y = pos.y;
+      } else if (activeDragHandle === "hipLine") {
+        guides.hipLine.x = Math.max(0.05, Math.min(0.95, pos.x));
+        guides.hipLine.y = Math.max(0.2, Math.min(0.8, pos.y));
+        tushValDisplay.textContent = Math.round(guides.hipLine.x * 100) + "%";
+      } else if (activeDragHandle === "planeStart") {
+        guides.planeLine.start.x = pos.x; guides.planeLine.start.y = pos.y;
+        updatePlaneAngleBadge();
+      } else if (activeDragHandle === "planeEnd") {
+        guides.planeLine.end.x = pos.x; guides.planeLine.end.y = pos.y;
+        updatePlaneAngleBadge();
+      }
+    }
+
+    function onPointerUp() { activeDragHandle = null; }
+
+    function updatePlaneAngleBadge() {
+      const a = screenAngleDeg(guides.planeLine.start, guides.planeLine.end);
+      planeStatusText.textContent = "Shaft: " + a + "°";
+      accuracyScoreText.textContent = "Manual adjustment";
+    }
+
+    // ---------- AI review ----------
+    async function analyzeCurrentSwing() {
+      unlockMobileAudio();
+      const snapshotUrl = snapshotFrame();
+      aiCapturedImg.src = snapshotUrl;
+      const base64Data = snapshotUrl.split(",")[1] || "";
+
+      aiModal.classList.remove("hidden");
+      aiLoader.classList.remove("hidden");
+      aiContentBody.classList.add("hidden");
+
+      const prompt = "You are a PGA instructor analyzing a golf swing frame. " +
+        "Return only JSON: " +
+        '{"rating":"short label with a percent","setupAlignment":"pelvic tilt, knee flex, distance from ball",' +
+        '"swingPlane":"shaft angle, corridor adherence, head position","drillRecommendation":"one actionable feel drill"}';
+
+      // Medium thinking: this is the quality-critical call, and the golfer is
+      // reading a modal rather than holding a pose. Latency is affordable.
+      let parsed = await callGemini(prompt, base64Data, 30000, "medium");
+
+      if (!parsed) {
+        parsed = {
+          rating: userApiKey
+            ? "Review unavailable" + (lastGeminiError ? " — " + lastGeminiError : "")
+            : "Add an API key for AI review",
+          setupAlignment: "No cloud analysis this time. Check your setup against the head ring and tush line: spine tilt balanced, athletic knee flex, glutes touching the purple wall.",
+          swingPlane: "Compare the shaft against the green plane line at address. The hands should sit inside the amber corridor.",
+          drillRecommendation: "Keep the lead glute touching the tush line through impact to prevent early extension."
+        };
+      }
+
+      aiLoader.classList.add("hidden");
+      aiScore.textContent = parsed.rating || "Evaluated";
+      aiSetupText.textContent = parsed.setupAlignment || "";
+      aiPlaneText.textContent = parsed.swingPlane || "";
+      aiDrillText.textContent = parsed.drillRecommendation || "";
+      aiContentBody.classList.remove("hidden");
+      if (window.lucide) lucide.createIcons();
+    }
+
+    // ---------- Toast ----------
+    let toastTimer = null;
+    function showToast(msg) {
+      const toast = $("toast-box");
+      $("toast-text").textContent = msg;
+      toast.classList.remove("hidden");
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.add("hidden"), 2500);
+    }
+
+    // ---------- Events ----------
+    btnRequestCamPerm.addEventListener("click", async () => {
+      unlockMobileAudio();
+      cameraPromptOverlay.classList.add("hidden");
+      isSimulatedFeed = false;
+      await initCamera();
+    });
+
+    btnSkipCam.addEventListener("click", () => {
+      unlockMobileAudio();
+      cameraPromptOverlay.classList.add("hidden");
+      enableSimulationMode("skipped");
+    });
+
+    btnStanceProfile.addEventListener("click", () => {
+      unlockMobileAudio();
+      currentStanceIndex = (currentStanceIndex + 1) % STANCE_PROFILES.length;
+      const p = STANCE_PROFILES[currentStanceIndex];
+      stanceProfileLabel.textContent = p.label;
+      applyStanceCoordinates(p);
+      showToast("Stance: " + p.label);
+    });
+
+    btnResetGuides.addEventListener("click", () => {
+      unlockMobileAudio();
+      applyStanceCoordinates(STANCE_PROFILES[currentStanceIndex]);
+      showToast("Guides reset");
+    });
+
+    btnTushLeft.addEventListener("click", () => {
+      unlockMobileAudio();
+      guides.hipLine.x = Math.max(0.05, guides.hipLine.x - 0.01);
+      guides.hipLine.enabled = true;
+      tushValDisplay.textContent = Math.round(guides.hipLine.x * 100) + "%";
+    });
+
+    btnTushRight.addEventListener("click", () => {
+      unlockMobileAudio();
+      guides.hipLine.x = Math.min(0.95, guides.hipLine.x + 0.01);
+      guides.hipLine.enabled = true;
+      tushValDisplay.textContent = Math.round(guides.hipLine.x * 100) + "%";
+    });
+
+    btnToggleGuideBox.addEventListener("click", () => {
+      unlockMobileAudio();
+      showFramingReticle = !showFramingReticle;
+      framingReticle.classList.toggle("hidden", !showFramingReticle);
+      btnToggleGuideBox.classList.toggle("text-emerald-400", showFramingReticle);
+      btnToggleGuideBox.classList.toggle("text-slate-400", !showFramingReticle);
+      showToast(showFramingReticle ? "Framing guide on" : "Framing guide off");
+    });
+
+    btnTimerConfig.addEventListener("click", () => {
+      unlockMobileAudio();
+      if (isCountingDown) cancelHandsFreeTimer();
+      selectedTimerIndex = (selectedTimerIndex + 1) % timerDurations.length;
+      const d = timerDurations[selectedTimerIndex];
+      timerConfigLabel.textContent = d + "s";
+      timerBtnText.textContent = "Lock (" + d + "s)";
+      showToast("Timer set to " + d + "s");
+    });
+
+    btnTimerTrigger.addEventListener("click", startHandsFreeTimer);
+
+    btnInstantScan.addEventListener("click", () => {
+      unlockMobileAudio();
+      if (isCountingDown) cancelHandsFreeTimer();
+      executeMultiFrameBurstScan();
+    });
+
+    canvas.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("mousemove", onPointerMove);
+    window.addEventListener("mouseup", onPointerUp);
+    canvas.addEventListener("touchstart", onPointerDown, { passive: true });
+    window.addEventListener("touchmove", onPointerMove, { passive: false });
+    window.addEventListener("touchend", onPointerUp);
+    window.addEventListener("touchcancel", onPointerUp);
+
+    btnOpenSettings.addEventListener("click", () => {
+      inputApiKey.value = userApiKey;
+      selectModel.value = geminiModel;
+      settingsModal.classList.remove("hidden");
+    });
+    btnCloseSettings.addEventListener("click", () => settingsModal.classList.add("hidden"));
+    settingsModal.addEventListener("click", (e) => {
+      if (e.target === settingsModal) settingsModal.classList.add("hidden");
+    });
+
+    btnSaveSettings.addEventListener("click", () => {
+      userApiKey = inputApiKey.value.trim();
+      geminiModel = selectModel.value;
+      lastGeminiError = "";
+      try {
+        localStorage.setItem("golf_gemini_api_key", userApiKey);
+        localStorage.setItem("golf_gemini_model", geminiModel);
+      } catch (e) {}
+      settingsModal.classList.add("hidden");
+      showToast(userApiKey ? "Saved. Using " + geminiModel : "Running without AI review");
+    });
+
+    btnForceCamRestart.addEventListener("click", async () => {
+      settingsModal.classList.add("hidden");
+      isSimulatedFeed = false;
+      await initCamera();
+    });
+
+    btnCamSource.addEventListener("click", async () => {
+      unlockMobileAudio();
+      currentFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+      isSimulatedFeed = false;
+      await initCamera();
+    });
+
+    btnToggleMirror.addEventListener("click", () => {
+      unlockMobileAudio();
+      isMirrored = !isMirrored;
+      btnToggleMirror.classList.toggle("bg-emerald-600/20", isMirrored);
+      btnToggleMirror.classList.toggle("text-emerald-400", isMirrored);
+      btnToggleMirror.classList.toggle("text-slate-300", !isMirrored);
+      showToast(isMirrored ? "Mirror on" : "Mirror off");
+    });
+
+    btnModeLive.addEventListener("click", () => {
+      appMode = "live";
+      btnModeLive.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition";
+      btnModeDelay.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition";
+      delayControls.classList.add("opacity-50", "pointer-events-none");
+      delayIndicator.classList.add("hidden");
+    });
+
+    btnModeDelay.addEventListener("click", () => {
+      appMode = "delay";
+      btnModeDelay.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 shadow transition";
+      btnModeLive.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition";
+      delayControls.classList.remove("opacity-50", "pointer-events-none");
+      delayIndicator.classList.remove("hidden");
+      delayBadgeText.textContent = delaySeconds.toFixed(1) + "s delayed replay";
+    });
+
+    delaySlider.addEventListener("input", (e) => {
+      delaySeconds = parseFloat(e.target.value);
+      delayLabel.textContent = delaySeconds.toFixed(1) + "s";
+      delayBadgeText.textContent = delaySeconds.toFixed(1) + "s delayed replay";
+    });
+
+    btnGuidePlane.addEventListener("click", () => {
+      guides.planeLine.enabled = !guides.planeLine.enabled;
+      btnGuidePlane.classList.toggle("opacity-40", !guides.planeLine.enabled);
+    });
+    btnGuideCorridor.addEventListener("click", () => {
+      guides.corridor.enabled = !guides.corridor.enabled;
+      btnGuideCorridor.classList.toggle("opacity-40", !guides.corridor.enabled);
+    });
+    btnGuideHead.addEventListener("click", () => {
+      guides.headBox.enabled = !guides.headBox.enabled;
+      btnGuideHead.classList.toggle("opacity-40", !guides.headBox.enabled);
+    });
+    btnGuideHip.addEventListener("click", () => {
+      guides.hipLine.enabled = !guides.hipLine.enabled;
+      btnGuideHip.classList.toggle("opacity-40", !guides.hipLine.enabled);
+    });
+
+    btnAiAnalyze.addEventListener("click", analyzeCurrentSwing);
+    btnReAnalyze.addEventListener("click", analyzeCurrentSwing);
+    btnCloseModal.addEventListener("click", () => aiModal.classList.add("hidden"));
+    aiModal.addEventListener("click", (e) => { if (e.target === aiModal) aiModal.classList.add("hidden"); });
+
+    window.addEventListener("pointerdown", unlockMobileAudio, { once: true });
+    window.addEventListener("touchstart", unlockMobileAudio, { once: true });
+
+    // Re-fit on rotate / URL bar collapse
+    window.addEventListener("resize", resizeCanvas);
+    window.addEventListener("orientationchange", () => setTimeout(resizeCanvas, 250));
+
+    // Release the camera when backgrounded, reacquire on return
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) { clearFrameBuffer(); }
+      else if (!isSimulatedFeed && video.paused) { video.play().catch(() => {}); }
+    });
+
+    // ---------- Boot ----------
+    function boot() {
+      if (window.lucide) lucide.createIcons();
+      applyStanceCoordinates(STANCE_PROFILES[currentStanceIndex]);
+      resizeCanvas();
+      requestAnimationFrame(render);
+      // Camera waits for the user gesture on the overlay (required by iOS)
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", boot);
+    } else {
+      boot();
+    }
+  </script>
+</body>
+</html>
