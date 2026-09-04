@@ -865,16 +865,23 @@
     // Snapshot only the video region, without guide overlays baked in
     function snapshotFrame() {
       try {
-        const dpr = window.devicePixelRatio || 1;
-        const sx = videoRect.x * dpr, sy = videoRect.y * dpr;
-        const sw = Math.max(1, videoRect.w * dpr), sh = Math.max(1, videoRect.h * dpr);
+        // Derive the backing-store scale from the canvas itself. Do NOT read
+        // devicePixelRatio here: resizeCanvas() caps it at 2, so on a DPR-3 phone
+        // the raw value cropped 1.5x too large and 1.5x too far right/down, sending
+        // Gemini a shifted, partly-empty frame and breaking every mapped result.
+        const scaleX = canvas.width / (canvas.clientWidth || 1);
+        const scaleY = canvas.height / (canvas.clientHeight || 1);
+        const sx = videoRect.x * scaleX, sy = videoRect.y * scaleY;
+        const sw = Math.max(1, videoRect.w * scaleX), sh = Math.max(1, videoRect.h * scaleY);
         const out = document.createElement("canvas");
-        out.width = Math.min(1024, sw);
-        out.height = Math.round(out.width * (sh / sw));
+        out.width = Math.round(Math.min(1280, sw));
+        out.height = Math.max(1, Math.round(out.width * (sh / sw)));
         out.getContext("2d").drawImage(canvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
-        return out.toDataURL("image/jpeg", 0.85);
+        // A thin dark shaft against a dark mat is exactly what aggressive JPEG
+        // compression erases, so keep the quality high here.
+        return out.toDataURL("image/jpeg", 0.92);
       } catch (e) {
-        return canvas.toDataURL("image/jpeg", 0.85);
+        return canvas.toDataURL("image/jpeg", 0.92);
       }
     }
 
@@ -886,69 +893,98 @@
       const profile = STANCE_PROFILES[currentStanceIndex];
       const isLefty = profile.gluteSide === "left";
 
-      const detected = {
-        clubHead:  { x: isLefty ? 0.65 : 0.35, y: 0.84 },
-        gripHands: { x: isLefty ? 0.52 : 0.48, y: 0.58 },
-        headCenter:{ x: 0.50, y: 0.28 },
-        tushLineX: isLefty ? 0.38 : 0.62,
-        confidence: 70
-      };
+      let confidence = 70;
 
-      // Capture the video's on-canvas rect now: snapshotFrame() crops to just this
-      // region, so Gemini's coordinates come back normalized to the crop, not the
-      // full canvas. Any letterboxing (video aspect != canvas aspect) means those
-      // two spaces differ and must be reconciled below.
+      // Capture the video's on-canvas rect now: snapshotFrame() crops to exactly this
+      // region, so Gemini's coordinates come back relative to that crop, not to the
+      // full canvas. Letterboxing (video aspect != canvas aspect) makes those two
+      // spaces differ, so every AI point has to be mapped back through this rect.
       const capturedVideoRect = { x: videoRect.x, y: videoRect.y, w: videoRect.w, h: videoRect.h };
+      const capturedMirrored = isMirrored;
       const snapshotUrl = snapshotFrame();
       const base64Data = snapshotUrl.split(",")[1] || "";
 
       const prompt = "You are a golf computer vision system analyzing an address posture frame (" + profile.label + ").\n" +
         "Return 2D point coordinates on Gemini's native 0-1000 scale (top-left origin, per your spatial " +
         "understanding conventions -- NOT 0.0-1.0) for this player's actual setup:\n" +
-        "1. clubHead: the clubhead on the ground\n" +
+        "1. clubHead: the clubhead where it meets the ground\n" +
         "2. gripHands: center of the hands on the grip\n" +
         "3. headCenter: center of the head\n" +
         "4. tushLineX: outermost lateral silhouette edge of the glutes\n" +
         "5. shaftAngleDegrees: measured shaft angle to horizontal. Do not snap to 45/50/55.\n" +
+        "The club shaft is often thin, dark and low-contrast against a dark floor or mat. " +
+        "Trace the straight line running from the hands down to the ground and follow it to its " +
+        "lowest end; do not fall back on a generic address position. If the shaft genuinely " +
+        "cannot be located, set detected to false rather than inventing coordinates.\n" +
         'Return only JSON: {"detected":true,"clubHead":{"x":350,"y":840},"gripHands":{"x":480,"y":580},' +
         '"headCenter":{"x":500,"y":280},"tushLineX":620,"shaftAngleDegrees":49.2,"confidence":98}';
 
       // Low thinking: coordinate localization is a perception task, and the
       // golfer is holding a stance while this runs. Speed matters here.
       const ai = await callGemini(prompt, base64Data, 20000, "low");
+
+      const clamp = (v, lo, hi) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : lo;
+      };
+
+      // Work in VIDEO-frame space first (0-1 across the picture actually sent).
+      // The sanity ranges describe where a body part sits within the picture, so
+      // they only hold in this space -- applying them after mapping to canvas
+      // space would drag valid points around whenever the video is letterboxed.
+      let chVx, chVy, ghVx, ghVy, hdVx, hdVy, tuVx;
+
       if (ai && ai.detected) {
-        const cw = canvas.clientWidth || 1;
-        const ch = canvas.clientHeight || 1;
-        // Gemini returns points on its native 0-1000 scale, relative to the cropped
-        // video frame we sent. Descale to 0-1 first, then map into canvas-normalized
-        // space using the video's on-canvas rect (accounts for any letterboxing).
-        const toCanvasNorm = (pt) => ({
-          x: (capturedVideoRect.x + (pt.x / 1000) * capturedVideoRect.w) / cw,
-          y: (capturedVideoRect.y + (pt.y / 1000) * capturedVideoRect.h) / ch
-        });
-        if (ai.clubHead) detected.clubHead = toCanvasNorm(ai.clubHead);
-        if (ai.gripHands) detected.gripHands = toCanvasNorm(ai.gripHands);
-        if (ai.headCenter) detected.headCenter = toCanvasNorm(ai.headCenter);
-        if (ai.tushLineX !== undefined) {
-          detected.tushLineX = (capturedVideoRect.x + (Number(ai.tushLineX) / 1000) * capturedVideoRect.w) / cw;
-        }
-        detected.confidence = Number(ai.confidence) || 95;
+        // Descale Gemini's 0-1000 scale, then undo the mirror: render() draws the
+        // video through a flipped transform, so the pixels we captured are mirrored
+        // while the guides themselves are drawn unmirrored.
+        const nx = (v) => {
+          const n = clamp(Number(v) / 1000, 0, 1);
+          return capturedMirrored ? 1 - n : n;
+        };
+        const ny = (v) => clamp(Number(v) / 1000, 0, 1);
+
+        chVx = clamp(nx(ai.clubHead   && ai.clubHead.x),   0.02, 0.98);
+        chVy = clamp(ny(ai.clubHead   && ai.clubHead.y),   0.45, 1.00);
+        ghVx = clamp(nx(ai.gripHands  && ai.gripHands.x),  0.02, 0.98);
+        ghVy = clamp(ny(ai.gripHands  && ai.gripHands.y),  0.20, 0.92);
+        hdVx = clamp(nx(ai.headCenter && ai.headCenter.x), 0.02, 0.98);
+        hdVy = clamp(ny(ai.headCenter && ai.headCenter.y), 0.00, 0.60);
+        tuVx = clamp(nx(ai.tushLineX), 0.02, 0.98);
+        confidence = Number(ai.confidence) || 95;
+      } else {
+        // Geometric fallback, expressed in the same video-frame space.
+        chVx = isLefty ? 0.65 : 0.35; chVy = 0.84;
+        ghVx = isLefty ? 0.52 : 0.48; ghVy = 0.58;
+        hdVx = 0.50;                  hdVy = 0.28;
+        tuVx = isLefty ? 0.38 : 0.62;
       }
 
       scanOverlay.classList.add("hidden");
 
-      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
-      const chX = clamp(detected.clubHead.x, 0.05, 0.95);
-      const chY = clamp(detected.clubHead.y, 0.60, 0.95);
-      const ghX = clamp(detected.gripHands.x, 0.05, 0.95);
-      const ghY = clamp(detected.gripHands.y, 0.40, 0.80);
-      const headX = clamp(detected.headCenter.x, 0.10, 0.90);
-      const headY = clamp(detected.headCenter.y, 0.12, 0.45);
-      const tushX = clamp(detected.tushLineX, 0.05, 0.95);
+      const vr = capturedVideoRect;
+      const cw = canvas.clientWidth || 1;
+      const ch = canvas.clientHeight || 1;
+      const toCx = (n) => (vr.w > 0 ? (vr.x + n * vr.w) / cw : n);
+      const toCy = (n) => (vr.h > 0 ? (vr.y + n * vr.h) / ch : n);
 
-      const ext = 2.4;
-      const topX = clamp(chX + (ghX - chX) * ext, 0.05, 0.95);
-      const topY = clamp(chY + (ghY - chY) * ext, 0.05, 0.95);
+      const chX = toCx(chVx), chY = toCy(chVy);
+      const ghX = toCx(ghVx), ghY = toCy(ghVy);
+      const headX = toCx(hdVx), headY = toCy(hdVy);
+      const tushX = toCx(tuVx);
+
+      // Extend clubhead->hands into the full shaft plane line. Shrink the extension
+      // until both ends are on screen rather than clamping x and y independently:
+      // independent clamping bends the line and corrupts the shaft angle readout.
+      const dxN = ghX - chX, dyN = ghY - chY;
+      const limit = (from, d) => {
+        if (d > 1e-6) return (0.97 - from) / d;
+        if (d < -1e-6) return (0.03 - from) / d;
+        return Infinity;
+      };
+      const ext = Math.max(1.05, Math.min(2.4, limit(chX, dxN), limit(chY, dyN)));
+      const topX = chX + dxN * ext;
+      const topY = chY + dyN * ext;
 
       guides.planeLine.start = { x: chX, y: chY };
       guides.planeLine.end = { x: topX, y: topY };
@@ -961,7 +997,7 @@
 
       const angle = screenAngleDeg(guides.planeLine.start, guides.planeLine.end);
       planeStatusText.textContent = "Shaft: " + angle + "° locked";
-      accuracyScoreText.textContent = "Confidence " + detected.confidence + "%";
+      accuracyScoreText.textContent = "Confidence " + confidence + "%";
 
       lockFlashOverlay.classList.remove("hidden");
       setTimeout(() => lockFlashOverlay.classList.add("hidden"), 450);
