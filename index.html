@@ -923,6 +923,34 @@
       // golfer is holding a stance while this runs. Speed matters here.
       const ai = await callGemini(prompt, base64Data, 20000, "low");
 
+      scanOverlay.classList.add("hidden");
+
+      // Three outcomes, kept visibly distinct. A failed scan must never present
+      // itself as a successful lock: the geometric fallback used to render a
+      // confident "locked" badge at 70% whether or not anything was detected,
+      // which hid API errors and empty frames behind plausible-looking guides.
+      const aiOk = !!(ai && ai.detected);
+      let failReason = "";
+      if (userApiKey) {
+        if (!ai) failReason = lastGeminiError || "No response";
+        else if (!ai.detected) failReason = "No stance found in frame";
+      }
+
+      if (failReason) {
+        // Leave the guides where they are rather than yanking them to a canned
+        // position the golfer did not ask for.
+        planeStatusText.textContent = "No lock";
+        accuracyScoreText.textContent = failReason;
+        accuracyScoreText.classList.remove("text-emerald-400");
+        accuracyScoreText.classList.add("text-amber-400");
+        showToast("Scan failed: " + failReason);
+        speakVoice("No stance detected");
+        return;
+      }
+
+      accuracyScoreText.classList.remove("text-amber-400");
+      accuracyScoreText.classList.add("text-emerald-400");
+
       const clamp = (v, lo, hi) => {
         const n = Number(v);
         return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : lo;
@@ -934,7 +962,7 @@
       // space would drag valid points around whenever the video is letterboxed.
       let chVx, chVy, ghVx, ghVy, hdVx, hdVy, tuVx;
 
-      if (ai && ai.detected) {
+      if (aiOk) {
         // Descale Gemini's 0-1000 scale, then undo the mirror: render() draws the
         // video through a flipped transform, so the pixels we captured are mirrored
         // while the guides themselves are drawn unmirrored.
@@ -953,14 +981,12 @@
         tuVx = clamp(nx(ai.tushLineX), 0.02, 0.98);
         confidence = Number(ai.confidence) || 95;
       } else {
-        // Geometric fallback, expressed in the same video-frame space.
+        // Documented no-key mode: geometric guides, same video-frame space.
         chVx = isLefty ? 0.65 : 0.35; chVy = 0.84;
         ghVx = isLefty ? 0.52 : 0.48; ghVy = 0.58;
         hdVx = 0.50;                  hdVy = 0.28;
         tuVx = isLefty ? 0.38 : 0.62;
       }
-
-      scanOverlay.classList.add("hidden");
 
       const vr = capturedVideoRect;
       const cw = canvas.clientWidth || 1;
@@ -996,15 +1022,20 @@
       tushValDisplay.textContent = Math.round(tushX * 100) + "%";
 
       const angle = screenAngleDeg(guides.planeLine.start, guides.planeLine.end);
-      planeStatusText.textContent = "Shaft: " + angle + "° locked";
-      accuracyScoreText.textContent = "Confidence " + confidence + "%";
 
-      lockFlashOverlay.classList.remove("hidden");
-      setTimeout(() => lockFlashOverlay.classList.add("hidden"), 450);
-
-      playSuccessChime();
-      speakVoice("Locked. Shaft at " + angle + " degrees.");
-      showToast("Locked at " + angle + "°");
+      if (aiOk) {
+        planeStatusText.textContent = "Shaft: " + angle + "° locked";
+        accuracyScoreText.textContent = "Confidence " + confidence + "%";
+        lockFlashOverlay.classList.remove("hidden");
+        setTimeout(() => lockFlashOverlay.classList.add("hidden"), 450);
+        playSuccessChime();
+        speakVoice("Locked. Shaft at " + angle + " degrees.");
+        showToast("Locked at " + angle + "°");
+      } else {
+        planeStatusText.textContent = "Shaft: " + angle + "° (default)";
+        accuracyScoreText.textContent = "Geometric guides, no API key";
+        showToast("Default guides. Add a Gemini key for real detection.");
+      }
     }
 
     // Angle measured in true screen pixels, so it stays correct on any aspect ratio
