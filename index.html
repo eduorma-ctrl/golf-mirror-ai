@@ -838,10 +838,20 @@
         });
         clearTimeout(timeoutId);
         if (!res.ok) {
+          // Surface Google's own explanation, not just the status code. A 403 is
+          // almost always a key restriction or a disabled API, and only the body
+          // says which -- and you cannot open devtools on a phone at the range.
           let detail = "";
-          try { detail = (await res.text()).slice(0, 200); } catch (e2) {}
+          try {
+            const body = await res.text();
+            try {
+              const j = JSON.parse(body);
+              detail = (j && j.error && (j.error.message || j.error.status)) || "";
+            } catch (eParse) { detail = body; }
+          } catch (eRead) {}
+          detail = String(detail).replace(/\s+/g, " ").trim().slice(0, 160);
           console.warn("Gemini HTTP " + res.status, detail);
-          lastGeminiError = "HTTP " + res.status + " on " + geminiModel;
+          lastGeminiError = "HTTP " + res.status + (detail ? ": " + detail : " on " + geminiModel);
           return null;
         }
         const json = await res.json();
@@ -943,7 +953,7 @@
         accuracyScoreText.textContent = failReason;
         accuracyScoreText.classList.remove("text-emerald-400");
         accuracyScoreText.classList.add("text-amber-400");
-        showToast("Scan failed: " + failReason);
+        showToast("Scan failed: " + failReason, 7000);
         speakVoice("No stance detected");
         return;
       }
@@ -1443,12 +1453,13 @@
 
     // ---------- Toast ----------
     let toastTimer = null;
-    function showToast(msg) {
+    function showToast(msg, ms) {
       const toast = $("toast-box");
       $("toast-text").textContent = msg;
       toast.classList.remove("hidden");
       if (toastTimer) clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => toast.classList.add("hidden"), 2500);
+      // Errors need longer than a confirmation: they carry text worth reading.
+      toastTimer = setTimeout(() => toast.classList.add("hidden"), ms || 2500);
     }
 
     // ---------- Events ----------
