@@ -491,7 +491,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-guard";
+    const BUILD = "2026-09-05-tushbody";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -681,8 +681,12 @@
       lastFrameWrap.classList.remove("hidden");
       const img = new Image();
       img.onload = () => {
+        // Fit inside BOTH a width and a height budget. Width alone made a portrait
+        // frame 688px tall on a 636px viewport -- 108% of the screen -- which pushed
+        // the log and its Copy button off the bottom of the modal entirely.
         const maxW = Math.max(160, Math.min(520, (lastFrameWrap.clientWidth || 320) - 24));
-        const scale = maxW / img.width;
+        const maxH = Math.max(120, Math.round((window.innerHeight || 640) * 0.38));
+        const scale = Math.min(maxW / img.width, maxH / img.height);
         lastFrameCanvas.width = Math.round(img.width * scale);
         lastFrameCanvas.height = Math.round(img.height * scale);
         const c = lastFrameCanvas.getContext("2d");
@@ -732,6 +736,9 @@
           c.font = "bold 12px sans-serif";
           c.strokeStyle = "#020617";
           c.lineWidth = 3;
+          if (ai.tushLineY !== undefined && ai.tushLineY !== null) {
+            dot(x, py(ai.tushLineY), "#a855f7", "");
+          }
           const lbl = "tush " + ai.tushLineX + (ai.tushDetected === false ? " (declined)" : "");
           c.strokeText(lbl, Math.min(x + 6, lastFrameCanvas.width - 90), 16);
           c.fillStyle = "#c084fc";
@@ -1274,9 +1281,13 @@
         "1. clubHead: the clubhead where it meets the ground\n" +
         "2. gripHands: center of the hands on the grip\n" +
         "3. headCenter: center of the head\n" +
-        "4. tushLineX: x of the rearmost point of the buttocks silhouette -- the vertical " +
-        "line a golfer's glutes stay in contact with. Read it from the body outline, not from " +
-        "clothing folds, and not from the back or thighs.\n" +
+        "4. tushLineX and tushLineY: the rearmost point of the golfer's OWN buttocks " +
+        "silhouette -- the vertical line their glutes stay in contact with. This point must " +
+        "lie on the golfer's body outline. Ignore furniture, bags, beds, walls, doors and every " +
+        "other background object; a dark shape behind the golfer is not the golfer. Read the " +
+        "body outline, not clothing folds, and not the back or thighs. Give tushLineY as the " +
+        "height of that point, which should be near hip height and between the hands and the " +
+        "head in the vertical direction.\n" +
         "5. shaftAngleDegrees: measured shaft angle to horizontal. Do not snap to 45/50/55.\n" +
         "The club shaft is often thin, dark and low-contrast against a dark floor or mat. " +
         "Trace the straight line running from the hands down to the ground and follow it to its " +
@@ -1286,7 +1297,7 @@
         "cannot place that edge to within roughly 3% of the frame width. A tush line in the wrong " +
         "place is worse than no tush line at all, so do not guess this one.\n" +
         'Return only JSON: {"detected":true,"clubHead":{"x":350,"y":840},"gripHands":{"x":480,"y":580},' +
-        '"headCenter":{"x":500,"y":280},"tushDetected":true,"tushLineX":620,' +
+        '"headCenter":{"x":500,"y":280},"tushDetected":true,"tushLineX":620,"tushLineY":600,' +
         '"shaftAngleDegrees":49.2,"confidence":98}';
 
       // Low thinking: coordinate localization is a perception task, so the extra
@@ -1344,7 +1355,7 @@
       // The sanity ranges describe where a body part sits within the picture, so
       // they only hold in this space -- applying them after mapping to canvas
       // space would drag valid points around whenever the video is letterboxed.
-      let chVx, chVy, ghVx, ghVy, hdVx, hdVy, tuVx;
+      let chVx, chVy, ghVx, ghVy, hdVx, hdVy, tuVx, tuVy = null;
 
       if (aiOk) {
         // Descale Gemini's native 0-1000 scale. Do NOT flip x for the mirror: the
@@ -1367,6 +1378,11 @@
         tuVx = (ai.tushDetected === false || ai.tushLineX === undefined || ai.tushLineX === null)
           ? null
           : clamp(norm(ai.tushLineX), 0.02, 0.98);
+        // Optional: lets the drag handle sit at real hip height instead of a fixed
+        // 0.52, and makes a wrong tush line visible as a dot rather than just a line.
+        tuVy = (ai.tushLineY === undefined || ai.tushLineY === null)
+          ? null
+          : clamp(norm(ai.tushLineY), 0.02, 0.98);
         confidence = Number(ai.confidence) || 95;
         // Dump the whole object. Logging a hand-picked subset is how tushDetected
         // went unseen for a round: the field was in the prompt but not in the log.
@@ -1412,7 +1428,9 @@
       guides.planeLine.enabled = true;
       guides.corridor.enabled = true;
       guides.headBox.x = headX; guides.headBox.y = headY; guides.headBox.enabled = true;
-      guides.hipLine.x = tushX; guides.hipLine.y = 0.52; guides.hipLine.enabled = true;
+      guides.hipLine.x = tushX;
+      guides.hipLine.y = (tuVy === null) ? 0.52 : Math.max(0.2, Math.min(0.8, toCy(tuVy)));
+      guides.hipLine.enabled = true;
 
       tushValDisplay.textContent = Math.round(tushX * 100) + "%";
 
