@@ -279,7 +279,7 @@
       <div class="text-[10px] font-bold text-purple-300 uppercase tracking-wider flex items-center justify-between gap-2">
         <span class="flex items-center gap-1">
           <i data-lucide="align-vertical-space-around" class="w-3 h-3 text-purple-400"></i>
-          <span>Tush line</span>
+          <span id="tush-label-text">Tush line</span>
         </span>
         <span id="tush-val-display" class="text-xs font-mono font-bold text-purple-200">62%</span>
       </div>
@@ -501,7 +501,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-videospace";
+    const BUILD = "2026-09-05-faceon";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -522,6 +522,12 @@
       { id: "face_on",    label: "Face-On",    gluteSide: "center", clubSide: "center" }
     ];
     let currentStanceIndex = 0;
+
+    // Face-on and down-the-line disagree about what the purple vertical line means
+    // (glute edge vs trail hip), about whether the Hogan corridor means anything at
+    // all, and about what a shaft angle is telling you. Rather than test the profile
+    // id in six places, applyStanceCoordinates() keeps this in sync.
+    let isFaceOn = false;
 
     const timerDurations = [3, 5, 8, 12];
     let selectedTimerIndex = 1;
@@ -694,6 +700,7 @@
     const appFooter = $("app-footer");
     const guideToggles = $("guide-toggles");
     const tushAdjustWidget = $("tush-adjust-widget");
+    const tushLabelText = $("tush-label-text");
     const planeStatusBadge = $("plane-status-badge");
     const diagnosticsPill = $("diagnostics-pill");
     const btnFocus = $("btn-focus");
@@ -1053,6 +1060,7 @@
 
     // ---------- Stance ----------
     function applyStanceCoordinates(profile) {
+      isFaceOn = profile.id === "face_on";
       if (profile.id === "righty_dtl") {
         guides.planeLine.start = { x: 0.35, y: 0.84 };
         guides.planeLine.end = { x: 0.68, y: 0.22 };
@@ -1062,10 +1070,28 @@
         guides.planeLine.end = { x: 0.32, y: 0.22 };
         guides.headBox.x = 0.50; guides.hipLine.x = 0.38;
       } else {
-        guides.planeLine.start = { x: 0.48, y: 0.84 };
-        guides.planeLine.end = { x: 0.48, y: 0.22 };
-        guides.headBox.x = 0.50; guides.hipLine.x = 0.58;
+        // Face-on. The green line is still the shaft, but seen from the front it
+        // reads as shaft lean rather than swing plane, so it starts steep with a
+        // slight tilt toward the target. The purple line becomes a sway reference
+        // at the trail hip: 0.40 assumes a right-hander facing the camera, whose
+        // trail side falls on the camera's left. Both are only starting positions
+        // that a scan or a drag replaces.
+        guides.planeLine.start = { x: 0.48, y: 0.86 };
+        guides.planeLine.end = { x: 0.55, y: 0.26 };
+        guides.headBox.x = 0.50; guides.hipLine.x = 0.40;
       }
+
+      // The Hogan corridor brackets the hands against the shaft plane seen edge-on.
+      // Face-on there is nothing for it to bracket, so it is switched off rather
+      // than drawn as decoration the golfer might read as meaningful.
+      guides.corridor.enabled = !isFaceOn;
+      btnGuideCorridor.classList.toggle("opacity-40", !guides.corridor.enabled);
+      btnGuideCorridor.title = isFaceOn
+        ? "Hogan corridor - down-the-line only"
+        : "Hogan Shoulder/Elbow Corridor";
+      btnGuideHip.title = isFaceOn ? "Sway line (trail hip)" : "Tush Line (Early Extension)";
+      tushLabelText.textContent = isFaceOn ? "Sway line" : "Tush line";
+
       tushValDisplay.textContent = Math.round(guides.hipLine.x * 100) + "%";
       updatePlaneAngleBadge();
     }
@@ -1347,7 +1373,11 @@
       // Stored before the request so a timeout still leaves the frame to inspect.
       lastScan = { dataUrl: snapshotUrl, ai: null };
 
-      const prompt = "You are a golf computer vision system analyzing an address posture frame (" + profile.label + ").\n" +
+      // The two views ask the model for genuinely different things. The wire format
+      // is deliberately shared -- tushLineX/tushLineY/tushDetected carry whichever
+      // vertical reference the current view uses -- so everything downstream stays a
+      // single code path and only the meaning changes with the view.
+      const dtlPrompt = "You are a golf computer vision system analyzing an address posture frame (" + profile.label + ").\n" +
         "Return 2D point coordinates on Gemini's native 0-1000 scale (top-left origin, per your spatial " +
         "understanding conventions -- NOT 0.0-1.0) for this player's actual setup:\n" +
         "1. clubHead: the clubhead where it meets the ground\n" +
@@ -1371,6 +1401,36 @@
         'Return only JSON: {"detected":true,"clubHead":{"x":350,"y":840},"gripHands":{"x":480,"y":580},' +
         '"headCenter":{"x":500,"y":280},"tushDetected":true,"tushLineX":620,"tushLineY":600,' +
         '"shaftAngleDegrees":49.2,"confidence":98}';
+
+      const faceOnPrompt = "You are a golf computer vision system analyzing a FACE-ON address posture " +
+        "frame. The golfer is facing the camera, so their trail side (the right side of the body for a " +
+        "right-handed player) appears on one side of the image and their target side on the other.\n" +
+        "Return 2D point coordinates on Gemini's native 0-1000 scale (top-left origin, per your spatial " +
+        "understanding conventions -- NOT 0.0-1.0) for this player's actual setup:\n" +
+        "1. clubHead: the clubhead where it meets the ground\n" +
+        "2. gripHands: center of the hands on the grip\n" +
+        "3. headCenter: center of the head\n" +
+        "4. tushLineX and tushLineY: the OUTER edge of the golfer's TRAIL HIP -- the hip further " +
+        "from the target, the one that must not slide away from the target during the backswing. " +
+        "This point must lie on the golfer's own body outline. Ignore furniture, bags, beds, walls, " +
+        "doors and every other background object; a dark shape behind the golfer is not the golfer. " +
+        "Give tushLineY as the height of that point, which sits at hip height: below the hands and " +
+        "well below the head.\n" +
+        "5. shaftAngleDegrees: the shaft's angle to horizontal as it appears in this frame. Seen " +
+        "face-on this reads as shaft lean and is usually steep, often 60 to 85 degrees. Measure it; " +
+        "do not snap to 45/50/55.\n" +
+        "The club shaft is often thin, dark and low-contrast against a dark floor or mat. " +
+        "Trace the straight line running from the hands down to the ground and follow it to its " +
+        "lowest end; do not fall back on a generic address position. If the shaft genuinely " +
+        "cannot be located, set detected to false rather than inventing coordinates.\n" +
+        "Set tushDetected false whenever the hips are out of frame, obscured, or you cannot place " +
+        "that edge to within roughly 3% of the frame width. A sway line in the wrong place is worse " +
+        "than no sway line at all, so do not guess this one.\n" +
+        'Return only JSON: {"detected":true,"clubHead":{"x":480,"y":860},"gripHands":{"x":545,"y":620},' +
+        '"headCenter":{"x":500,"y":250},"tushDetected":true,"tushLineX":400,"tushLineY":620,' +
+        '"shaftAngleDegrees":74.5,"confidence":98}';
+
+      const prompt = isFaceOn ? faceOnPrompt : dtlPrompt;
 
       // Low thinking: coordinate localization is a perception task, so the extra
       // deliberation buys little here. The snapshot is already captured by this
@@ -1461,6 +1521,15 @@
         lastScan.ai = ai;
         logLine("ok", "AI raw (0-1000)", JSON.stringify(ai).slice(0, 600));
         logLine("info", "Mapped into video frame (0-1)", { club: [+chVx.toFixed(3), +chVy.toFixed(3)], hands: [+ghVx.toFixed(3), +ghVy.toFixed(3)], head: [+hdVx.toFixed(3), +hdVy.toFixed(3)], tushX: tuVx === null ? "not detected" : +tuVx.toFixed(3) });
+      } else if (isFaceOn) {
+        // Documented no-key mode, face-on. Right-hander facing the camera: the shaft
+        // leans toward the target and the trail hip sits on the camera's left. This
+        // branch used to be absent, so Face-On silently received the Righty DTL
+        // numbers and put the sway line on the wrong side of the golfer entirely.
+        chVx = 0.48; chVy = 0.86;
+        ghVx = 0.55; ghVy = 0.62;
+        hdVx = 0.50; hdVy = 0.26;
+        tuVx = 0.40;
       } else {
         // Documented no-key mode: geometric guides, same video-frame space.
         chVx = isLefty ? 0.65 : 0.35; chVy = 0.84;
@@ -1495,7 +1564,7 @@
       guides.planeLine.start = { x: chX, y: chY };
       guides.planeLine.end = { x: topX, y: topY };
       guides.planeLine.enabled = true;
-      guides.corridor.enabled = true;
+      guides.corridor.enabled = !isFaceOn;
       guides.headBox.x = headX; guides.headBox.y = headY; guides.headBox.enabled = true;
       guides.hipLine.x = tushX;
       guides.hipLine.y = (tuVy === null) ? 0.52 : Math.max(0.2, Math.min(0.8, tuVy));
@@ -1507,8 +1576,9 @@
 
       if (aiOk) {
         planeStatusText.textContent = "Shaft: " + angle + "° locked";
-        accuracyScoreText.textContent = "Confidence " + confidence + "%" + (tushKept ? " - tush kept" : "");
-        if (tushKept) logLine("warn", "Tush line not detected - kept the existing line at " + Math.round(tushX * 100) + "%");
+        const vLabel = isFaceOn ? "sway" : "tush";
+        accuracyScoreText.textContent = "Confidence " + confidence + "%" + (tushKept ? " - " + vLabel + " kept" : "");
+        if (tushKept) logLine("warn", "Vertical reference (" + vLabel + ") not detected - kept the existing line at " + Math.round(tushX * 100) + "%");
         lockFlashOverlay.classList.remove("hidden");
         setTimeout(() => lockFlashOverlay.classList.add("hidden"), 450);
         // A confirmed lock is exactly when the interface stops being useful and
@@ -1830,7 +1900,7 @@
 
         ctx.font = "bold " + Math.round(11 * fontScale) + "px sans-serif";
         ctx.fillStyle = "#c084fc";
-        const label = "Tush line";
+        const label = isFaceOn ? "Sway line" : "Tush line";
         const lw = ctx.measureText(label).width;
         const lx = wallRight ? Math.max(4, hx - lw - 16) : Math.min(w - lw - 4, hx + 16);
         ctx.fillText(label, lx, vidToPxY(guides.hipLine.y) - 14);
@@ -2103,6 +2173,10 @@
       btnGuidePlane.classList.toggle("opacity-40", !guides.planeLine.enabled);
     });
     btnGuideCorridor.addEventListener("click", () => {
+      if (isFaceOn) {
+        showToast("The Hogan corridor is a down-the-line guide", 2500);
+        return;
+      }
       guides.corridor.enabled = !guides.corridor.enabled;
       btnGuideCorridor.classList.toggle("opacity-40", !guides.corridor.enabled);
     });
