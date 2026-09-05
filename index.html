@@ -203,7 +203,7 @@
     <div id="framing-reticle" class="absolute inset-0 pointer-events-none flex items-center justify-center z-10 transition-opacity duration-300">
       <div class="relative w-[88%] max-w-sm h-[82%] border-2 border-dashed border-emerald-500/40 rounded-3xl animate-target-box flex flex-col justify-between p-3">
         <div class="flex justify-between items-center text-[9px] sm:text-[10px] font-mono text-emerald-400 font-bold bg-slate-950/85 backdrop-blur px-2 py-1 rounded-lg border border-emerald-500/30">
-          <span>DTL TARGET ZONE</span>
+          <span id="reticle-zone-label">DTL TARGET ZONE</span>
           <span>HEAD LEVEL ↓</span>
         </div>
         <div class="w-20 h-20 sm:w-24 sm:h-24 border border-sky-400/60 rounded-full mx-auto -mt-6 border-dashed flex items-center justify-center text-[9px] sm:text-[10px] text-sky-400 font-mono font-bold bg-sky-950/20">
@@ -211,7 +211,7 @@
         </div>
         <div class="flex justify-between items-center text-[9px] sm:text-[10px] font-mono text-emerald-400 font-bold bg-slate-950/85 backdrop-blur px-2 py-1 rounded-lg border border-emerald-500/30">
           <span>MAT / BALL LINE ↑</span>
-          <span>FEET / TOE LINE</span>
+          <span id="reticle-feet-label">FEET / TOE LINE</span>
         </div>
       </div>
     </div>
@@ -701,6 +701,8 @@
     const guideToggles = $("guide-toggles");
     const tushAdjustWidget = $("tush-adjust-widget");
     const tushLabelText = $("tush-label-text");
+    const reticleZoneLabel = $("reticle-zone-label");
+    const reticleFeetLabel = $("reticle-feet-label");
     const planeStatusBadge = $("plane-status-badge");
     const diagnosticsPill = $("diagnostics-pill");
     const btnFocus = $("btn-focus");
@@ -1030,7 +1032,7 @@
         const s = track ? track.getSettings() : {};
         const resW = s.width || video.videoWidth || 1280;
         const resH = s.height || video.videoHeight || 720;
-        const facingLabel = currentFacingMode === "environment" ? "Rear DTL" : "Front";
+        const facingLabel = currentFacingMode === "environment" ? "Rear" : "Front";
 
         streamStatusText.textContent = facingLabel + " live";
         camActiveDot.className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0";
@@ -1091,6 +1093,8 @@
         : "Hogan Shoulder/Elbow Corridor";
       btnGuideHip.title = isFaceOn ? "Sway line (trail hip)" : "Tush Line (Early Extension)";
       tushLabelText.textContent = isFaceOn ? "Sway line" : "Tush line";
+      reticleZoneLabel.textContent = isFaceOn ? "FACE-ON TARGET ZONE" : "DTL TARGET ZONE";
+      reticleFeetLabel.textContent = isFaceOn ? "STANCE WIDTH" : "FEET / TOE LINE";
 
       tushValDisplay.textContent = Math.round(guides.hipLine.x * 100) + "%";
       updatePlaneAngleBadge();
@@ -1899,11 +1903,16 @@
         ctx.fill(); ctx.stroke();
 
         ctx.font = "bold " + Math.round(11 * fontScale) + "px sans-serif";
-        ctx.fillStyle = "#c084fc";
         const label = isFaceOn ? "Sway line" : "Tush line";
         const lw = ctx.measureText(label).width;
         const lx = wallRight ? Math.max(4, hx - lw - 16) : Math.min(w - lw - 4, hx + 16);
-        ctx.fillText(label, lx, vidToPxY(guides.hipLine.y) - 14);
+        const ly = vidToPxY(guides.hipLine.y) - 14;
+        const padX = Math.round(5 * fontScale), padY = Math.round(3 * fontScale);
+        const lh = Math.round(11 * fontScale);
+        ctx.fillStyle = "rgba(2, 6, 23, 0.82)";
+        ctx.fillRect(lx - padX, ly - lh - padY, lw + padX * 2, lh + padY * 2);
+        ctx.fillStyle = "#c084fc";
+        ctx.fillText(label, lx, ly);
         ctx.restore();
       }
     }
