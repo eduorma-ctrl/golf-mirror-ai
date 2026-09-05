@@ -536,7 +536,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-trueorient";
+    const BUILD = "2026-09-05-review2";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -568,7 +568,10 @@
     let selectedTimerIndex = 1;
     let isCountingDown = false;
     let countdownTimerId = null;
-    let lastFramePixels = null;
+    // Previous-frame pixels for the two frame-difference consumers. Objects so
+    // a reset is one assignment and the shared helper can update them in place.
+    const stabPrev = { pixels: null };
+    const motionPrev = { pixels: null };
 
     const frameBuffer = [];
     // Raw bitmaps, so this is the wrong lever to keep pulling. Much past ten
@@ -607,9 +610,15 @@
     const SWING_OFF = 12;
     const SWING_MIN_MS = 150;
     const SWING_QUIET_MS = 1200;
+    // A swing is over in about a second and a half. Walking to the phone and
+    // stopping is the same "burst then stillness" shape but lasts far longer,
+    // and duration separates the two more cleanly than any motion threshold.
+    const SWING_MAX_MS = 2500;
     const SWING_COOLDOWN_MS = 3000;
+    // A held clip the golfer has not opened yet is the swing they came for. It
+    // is never replaced -- the walk over would otherwise be what replaces it.
+    let swingClipViewed = false;
     let motionValue = 0;
-    let motionPrevPixels = null;
     let lastMotionSample = 0;
     let swingActive = false;
     let swingStartedAt = 0;
@@ -1216,15 +1225,24 @@
     }
 
     // B. The swing is a spike, so it can be aimed at rather than hunted for.
-    function drawMotionTrace() {
-      const frames = replaySourceFrames();
+    // Reading clientWidth right after syncReplayUi has written the DOM forces a
+    // synchronous layout every frame of replay -- and of the real-time export
+    // on the same loop. The CSS size is read here instead, on entry and on
+    // resize, and drawMotionTrace works from the cached backing size.
+    function sizeMotionTrace() {
       const cssW = motionTrace.clientWidth || 1;
       const cssH = motionTrace.clientHeight || 16;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      if (motionTrace.width !== Math.round(cssW * dpr)) {
-        motionTrace.width = Math.round(cssW * dpr);
-        motionTrace.height = Math.round(cssH * dpr);
+      const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
+      if (motionTrace.width !== bw || motionTrace.height !== bh) {
+        motionTrace.width = bw;
+        motionTrace.height = bh;
       }
+    }
+
+    function drawMotionTrace() {
+      const frames = replaySourceFrames();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = motionTrace.width, h = motionTrace.height;
       motionCtx.clearRect(0, 0, w, h);
       if (frames.length < 2) return;
@@ -1268,11 +1286,17 @@
       replayLastTick = now;
     }
 
-    function syncReplayUi() {
+    // Called every frame of replay, so it writes the DOM only when the frame
+    // index has actually moved. The scrubber's range is fixed for the length
+    // of a replay and is set once on entry.
+    let lastSyncedIndex = -1;
+    function syncReplayUi(force) {
+      const idx = replayFrameIndex();
+      if (!force && idx === lastSyncedIndex) return;
+      lastSyncedIndex = idx;
       const total = replaySourceFrames().length;
-      replayScrub.max = String(Math.max(1, total - 1));
-      if (!replayScrubbing) replayScrub.value = String(replayFrameIndex());
-      replayTime.textContent = (replayFrameIndex() / replayFps).toFixed(1) + "/" +
+      if (!replayScrubbing) replayScrub.value = String(idx);
+      replayTime.textContent = (idx / replayFps).toFixed(1) + "/" +
         (total / replayFps).toFixed(1) + "s";
     }
 
@@ -1464,12 +1488,32 @@
       if (busy) exportStatus.textContent = "Recording...";
     }
 
-    function clearFrameBuffer() {
-      while (frameBuffer.length) {
-        const f = frameBuffer.shift();
+    // Newest frame at or before a time, across the live buffer and the held
+    // clip. The two never overlap in time, so whichever contains the target
+    // wins; otherwise the newest frame older than the target, from either.
+    function newestFrameAtOrBefore(t) {
+      let best = null;
+      const consider = (arr) => {
+        for (let i = arr.length - 1; i >= 0; i--) {
+          if (arr[i].timestamp <= t) {
+            if (!best || arr[i].timestamp > best.timestamp) best = arr[i];
+            return;
+          }
+        }
+      };
+      consider(frameBuffer);
+      consider(swingClip);
+      return best || frameBuffer[0] || swingClip[0] || null;
+    }
+
+    function closeFrames(frames) {
+      while (frames.length) {
+        const f = frames.pop();
         if (f && f.bitmap && f.bitmap.close) { try { f.bitmap.close(); } catch (e) {} }
       }
     }
+
+    function clearFrameBuffer() { closeFrames(frameBuffer); }
 
     // ---------- Stance ----------
     function applyStanceCoordinates(profile) {
@@ -1516,15 +1560,25 @@
     stabCanvas.width = 64; stabCanvas.height = 64;
     const stabCtx = stabCanvas.getContext("2d", { willReadFrequently: true });
 
+    // Mean absolute red-channel difference between this frame and the last one
+    // seen through the same scratch canvas. One implementation, so the
+    // countdown's "still" threshold and the swing detector's thresholds are on
+    // the same scale by construction rather than by two loops staying identical.
+    // Returns null on the first call, when there is nothing to compare against.
+    function frameDiff(sctx, source, prev) {
+      sctx.drawImage(source, 0, 0, 64, 64);
+      const data = sctx.getImageData(0, 0, 64, 64).data;
+      if (!prev.pixels) { prev.pixels = new Uint8ClampedArray(data); return null; }
+      let diff = 0;
+      for (let i = 0; i < data.length; i += 16) diff += Math.abs(data[i] - prev.pixels[i]);
+      prev.pixels = new Uint8ClampedArray(data);
+      return diff / (64 * 64 / 4);
+    }
+
     function checkAddressStability() {
       try {
-        stabCtx.drawImage(canvas, 0, 0, 64, 64);
-        const data = stabCtx.getImageData(0, 0, 64, 64).data;
-        if (!lastFramePixels) { lastFramePixels = new Uint8ClampedArray(data); return false; }
-        let diff = 0;
-        for (let i = 0; i < data.length; i += 16) diff += Math.abs(data[i] - lastFramePixels[i]);
-        lastFramePixels = new Uint8ClampedArray(data);
-        return (diff / (64 * 64 / 4)) < 14;
+        const d = frameDiff(stabCtx, canvas, stabPrev);
+        return d !== null && d < 14;
       } catch (e) { return true; }
     }
 
@@ -1541,13 +1595,8 @@
       if (now - lastMotionSample < MOTION_SAMPLE_MS) return;
       lastMotionSample = now;
       try {
-        motionSampleCtx.drawImage(video, 0, 0, 64, 64);
-        const data = motionSampleCtx.getImageData(0, 0, 64, 64).data;
-        if (!motionPrevPixels) { motionPrevPixels = new Uint8ClampedArray(data); return; }
-        let diff = 0;
-        for (let i = 0; i < data.length; i += 16) diff += Math.abs(data[i] - motionPrevPixels[i]);
-        motionPrevPixels = new Uint8ClampedArray(data);
-        motionValue = diff / (64 * 64 / 4);
+        const d = frameDiff(motionSampleCtx, video, motionPrev);
+        if (d !== null) motionValue = d;
       } catch (e) { /* readback can fail mid-resize; the next sample retries */ }
     }
 
@@ -1568,6 +1617,18 @@
       }
 
       if (motionValue > swingPeak) swingPeak = motionValue;
+
+      // Still moving past the longest a swing could take: this is a walk, a
+      // practice waggle, or someone crossing the frame. Abandon it -- letting
+      // it run would capture a window that no longer contains anything.
+      if (now - swingStartedAt > SWING_MAX_MS) {
+        logLine("info", "Motion ignored - too long for a swing", {
+          activeMs: Math.round(now - swingStartedAt), peak: +swingPeak.toFixed(1), maxMs: SWING_MAX_MS
+        });
+        swingActive = false;
+        lastCaptureAt = now;
+        return;
+      }
 
       if (motionValue < SWING_OFF) {
         if (!swingQuietSince) swingQuietSince = now;
@@ -1590,6 +1651,15 @@
     }
 
     function captureSwing(now, activeMs) {
+      if (swingClip.length && !swingClipViewed) {
+        // The first capture after a swing is the swing. Anything that fires
+        // before the golfer has looked at it is the walk over, and must lose.
+        lastCaptureAt = now;
+        logLine("info", "Motion ignored - a swing is already held and unviewed", {
+          activeMs: Math.round(activeMs), peak: +swingPeak.toFixed(1)
+        });
+        return;
+      }
       // Moved, not copied. The live buffer keeps rolling from here, so a false
       // trigger costs a few seconds of scrollback and never the next swing.
       discardSwingClip();
@@ -1602,6 +1672,7 @@
       if (swingClip.length < 2) { discardSwingClip(); return; }
 
       lastCaptureAt = now;
+      swingClipViewed = false;
       swingBadge.classList.remove("hidden");
       swingBadge.classList.add("flex");
       showToast("Swing captured - tap Replay", 3500);
@@ -1615,10 +1686,8 @@
     }
 
     function discardSwingClip() {
-      while (swingClip.length) {
-        const f = swingClip.pop();
-        if (f && f.bitmap && f.bitmap.close) { try { f.bitmap.close(); } catch (e) {} }
-      }
+      closeFrames(swingClip);
+      swingClipViewed = false;
       swingBadge.classList.add("hidden");
       swingBadge.classList.remove("flex");
     }
@@ -1632,7 +1701,7 @@
       let remaining = totalSeconds;
 
       isCountingDown = true;
-      lastFramePixels = null;
+      stabPrev.pixels = null;
       btnTimerTrigger.classList.remove("bg-emerald-600", "hover:bg-emerald-500");
       btnTimerTrigger.classList.add("bg-red-600", "hover:bg-red-500");
       timerBtnText.textContent = "Cancel";
@@ -2203,6 +2272,8 @@
       if (canvas.width !== needW || canvas.height !== needH) {
         canvas.width = needW;
         canvas.height = needH;
+        // The trace only needs re-sizing when the layout actually changed.
+        if (appMode === "replay") sizeMotionTrace();
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
       return true;
@@ -2280,7 +2351,7 @@
         const maxKeep = MAX_BUFFER_SECONDS * 1000;
         while (frameBuffer.length &&
                (now - frameBuffer[0].timestamp > maxKeep ||
-                frameBuffer.length > MAX_BUFFER_FRAMES)) {
+                frameBuffer.length + swingClip.length > MAX_BUFFER_FRAMES)) {
           const old = frameBuffer.shift();
           if (old.bitmap && old.bitmap.close) { try { old.bitmap.close(); } catch (e) {} }
         }
@@ -2307,10 +2378,10 @@
         drawContain(video, video.videoWidth, video.videoHeight, w, h);
       } else {
         const targetTime = now - delaySeconds * 1000;
-        let frame = frameBuffer[0];
-        for (let i = frameBuffer.length - 1; i >= 0; i--) {
-          if (frameBuffer[i].timestamp <= targetTime) { frame = frameBuffer[i]; break; }
-        }
+        // Auto-capture moves the newest seconds out of frameBuffer into the
+        // held clip. Those frames still exist, so the delayed view looks in
+        // both rather than falling into the hole the move leaves behind.
+        const frame = newestFrameAtOrBefore(targetTime);
         if (frame && frame.bitmap) drawContain(frame.bitmap, frame.bitmap.width, frame.bitmap.height, w, h);
         else drawContain(video, video.videoWidth, video.videoHeight, w, h);
       }
@@ -2338,7 +2409,10 @@
         if (guides.corridor.enabled) {
           ctx.save();
           const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-          const perp = angle - Math.PI / 2;
+          // A mirror flips chirality. vidToPxX has already flipped the line's
+          // endpoints for an export; a fixed "minus ninety" would then put the
+          // corridor on the far side of the shaft, so the sign flips with it.
+          const perp = angle + (exportFlipX() ? 1 : -1) * Math.PI / 2;
           // Scale with the picture, not the canvas: it is a body-relative corridor.
           const off = guides.corridor.offsetPx * ((videoRect.w || w) / 800);
           const c1 = { x: p1.x + Math.cos(perp) * off, y: p1.y + Math.sin(perp) * off };
@@ -2421,7 +2495,11 @@
         // The wall spans the picture, so it stays on the golfer as the canvas resizes.
         const wallTop = vidToPxY(0.15);
         const wallBottom = vidToPxY(0.92);
-        const wallRight = guides.hipLine.x > 0.5;
+        // Which side the wall shades must follow the drawn position, which for
+        // an export is the flipped one -- otherwise the gradient and the label
+        // extend back toward the golfer in the saved file.
+        const hipDrawnX = exportFlipX() ? 1 - guides.hipLine.x : guides.hipLine.x;
+        const wallRight = hipDrawnX > 0.5;
         const g0 = wallRight ? hx : hx - depth;
         const g1 = wallRight ? hx + depth : hx;
         const grad = ctx.createLinearGradient(g0, 0, g1, 0);
@@ -2704,6 +2782,9 @@
 
     btnToggleMirror.addEventListener("click", () => {
       unlockMobileAudio();
+      // Flipping mid-export changes the orientation of the video, the guides,
+      // or both, half way through the saved file.
+      if (exportingClip) { showToast("Finish saving the clip first", 3000); return; }
       isMirrored = !isMirrored;
       btnToggleMirror.classList.toggle("bg-emerald-600/20", isMirrored);
       btnToggleMirror.classList.toggle("text-emerald-400", isMirrored);
@@ -2724,9 +2805,13 @@
         showToast("Nothing recorded yet - give it a few seconds", 3000);
         return;
       }
-      // Walking out mid-record would otherwise keep capturing the live feed
-      // into a file the golfer asked to be of their replay.
-      if (exportingClip && mode !== "replay") stopClipExport();
+      if (exportingClip) {
+        // Re-entering replay would rewind the playhead under a running
+        // recorder; walking out would keep capturing the live feed into a
+        // file the golfer asked to be of their replay.
+        if (mode === "replay") return;
+        stopClipExport();
+      }
       appMode = mode;
       btnModeLive.className = MODE_BTN_BASE + (mode === "live"
         ? "bg-emerald-600 text-white shadow" : MODE_BTN_IDLE);
@@ -2741,13 +2826,19 @@
 
       if (mode === "replay") {
         replayFrames = entering;
+        if (entering === swingClip) swingClipViewed = true;
         exportStatus.textContent = "";
         replayIndex = 0;
         replaySpeed = 1;
         btnReplaySpeed.textContent = "1x";
         replayFps = measureBufferFps(entering);
+        replayScrub.max = String(Math.max(1, entering.length - 1));
+        // The bar has just been unhidden; size the trace now, once, rather
+        // than reading layout from inside the render loop.
+        replayBar.classList.remove("hidden");
+        sizeMotionTrace();
         setReplayPlaying(true);
-        syncReplayUi();
+        syncReplayUi(true);
         // actualFps against target is the whole answer on whether 60 is worth
         // asking for: short of target here means the pipeline, not the camera.
         logLine("info", "Replay", {
