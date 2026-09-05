@@ -310,12 +310,30 @@
         <button id="btn-mode-delay" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition">
           Delayed
         </button>
+        <button id="btn-mode-replay" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition">
+          Replay
+        </button>
       </div>
 
       <div id="delay-controls" class="flex-1 flex items-center justify-end gap-2 opacity-50 pointer-events-none transition-opacity min-w-0">
         <label for="delay-slider" class="text-[11px] text-slate-400 whitespace-nowrap">Delay <span id="delay-label" class="font-bold text-amber-400">3.0s</span></label>
         <input id="delay-slider" type="range" min="1" max="8" step="0.5" value="3" class="w-20 sm:w-32 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
       </div>
+    </div>
+
+    <div id="replay-bar" class="hidden max-w-xl mx-auto mt-2 flex items-center gap-1.5">
+      <button id="btn-replay-play" class="shrink-0 p-2 rounded-lg bg-sky-500 text-slate-950 active:scale-95 transition" title="Play / pause">
+        <i data-lucide="pause" class="w-4 h-4"></i>
+      </button>
+      <button id="btn-replay-prev" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 active:scale-95 transition" title="Previous frame">
+        <i data-lucide="chevron-left" class="w-4 h-4"></i>
+      </button>
+      <button id="btn-replay-next" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 active:scale-95 transition" title="Next frame">
+        <i data-lucide="chevron-right" class="w-4 h-4"></i>
+      </button>
+      <input id="replay-scrub" type="range" min="0" max="1" step="1" value="0" class="flex-1 min-w-0 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-400" />
+      <span id="replay-time" class="shrink-0 text-[10px] font-mono text-sky-300 w-14 text-right">0.0/0.0s</span>
+      <button id="btn-replay-speed" class="shrink-0 px-2 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sky-300 text-[11px] font-bold active:scale-95 transition" title="Playback speed">1x</button>
     </div>
   </footer>
 
@@ -501,7 +519,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-faceon";
+    const BUILD = "2026-09-05-replay";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -536,10 +554,22 @@
     let lastFramePixels = null;
 
     const frameBuffer = [];
-    const MAX_BUFFER_SECONDS = 8;
+    // Raw bitmaps, so this is the wrong lever to keep pulling. Much past ten
+    // seconds and a phone will feel it; longer clips want MediaRecorder.
+    const MAX_BUFFER_SECONDS = 10;
     const BUFFER_FPS = 20;
     let lastBufferPushTime = 0;
     let bufferBusy = false;
+
+    // Replay reads the same buffer delay does, but from a playhead the golfer
+    // drives instead of a fixed offset from now. Held as a float so fractional
+    // speeds accumulate smoothly rather than stalling on a rounded index.
+    let replayIndex = 0;
+    let replayPlaying = false;
+    let replaySpeed = 1;
+    let replayLastTick = 0;
+    let replayScrubbing = false;
+    const REPLAY_SPEEDS = [1, 0.5, 0.25];
 
     const guides = {
       planeLine: { enabled: true, start: { x: 0.35, y: 0.84 }, end: { x: 0.68, y: 0.22 } },
@@ -661,6 +691,14 @@
 
     const btnModeLive = $("btn-mode-live");
     const btnModeDelay = $("btn-mode-delay");
+    const btnModeReplay = $("btn-mode-replay");
+    const replayBar = $("replay-bar");
+    const btnReplayPlay = $("btn-replay-play");
+    const btnReplayPrev = $("btn-replay-prev");
+    const btnReplayNext = $("btn-replay-next");
+    const replayScrub = $("replay-scrub");
+    const replayTime = $("replay-time");
+    const btnReplaySpeed = $("btn-replay-speed");
     const delayControls = $("delay-controls");
     const delaySlider = $("delay-slider");
     const delayLabel = $("delay-label");
@@ -727,6 +765,7 @@
       [guideToggles, tushAdjustWidget, planeStatusBadge, diagnosticsPill].forEach((el) => {
         if (el) el.classList.toggle("hidden", focusMode);
       });
+      replayBar.classList.toggle("hidden", focusMode || appMode !== "replay");
 
       if (focusMode) {
         framingReticle.classList.add("hidden");
@@ -1051,6 +1090,46 @@
       camActiveDot.className = "w-2 h-2 rounded-full bg-sky-400 shrink-0";
       camDiagText.textContent = "Camera: simulation" + (reason ? " (" + reason + ")" : "");
       logLine("warn", "Simulation mode" + (reason ? ": " + reason : ""));
+    }
+
+    function replayFrameIndex() {
+      return Math.max(0, Math.min(frameBuffer.length - 1, Math.floor(replayIndex)));
+    }
+
+    function advanceReplay(now) {
+      if (replayPlaying && !replayScrubbing) {
+        const dt = now - replayLastTick;
+        // Wall-clock rather than one-index-per-render: playback stays true to
+        // the capture rate even when the render loop drops frames.
+        replayIndex += (dt / 1000) * BUFFER_FPS * replaySpeed;
+        // Loop. The point of replay is watching the same two seconds again.
+        if (replayIndex >= frameBuffer.length) replayIndex = 0;
+        syncReplayUi();
+      }
+      replayLastTick = now;
+    }
+
+    function syncReplayUi() {
+      const total = frameBuffer.length;
+      replayScrub.max = String(Math.max(1, total - 1));
+      if (!replayScrubbing) replayScrub.value = String(replayFrameIndex());
+      replayTime.textContent = (replayFrameIndex() / BUFFER_FPS).toFixed(1) + "/" +
+        (total / BUFFER_FPS).toFixed(1) + "s";
+    }
+
+    function setReplayPlaying(playing) {
+      replayPlaying = playing;
+      replayLastTick = performance.now();
+      btnReplayPlay.innerHTML = '<i data-lucide="' + (playing ? "pause" : "play") + '" class="w-4 h-4"></i>';
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function stepReplay(delta) {
+      setReplayPlaying(false);
+      replayIndex = replayFrameIndex() + delta;
+      if (replayIndex < 0) replayIndex = frameBuffer.length - 1;
+      if (replayIndex > frameBuffer.length - 1) replayIndex = 0;
+      syncReplayUi();
     }
 
     function clearFrameBuffer() {
@@ -1724,8 +1803,10 @@
 
       const liveReady = !isSimulatedFeed && videoStream && video.videoWidth > 0 && video.readyState >= 2;
 
-      // Buffer frames for delayed replay, only while in delay mode
-      if (liveReady && appMode === "delay" && !bufferBusy &&
+      // Always recording, so Replay has something to show whichever mode the
+      // golfer was in when they swung. Frozen in replay: the clip being watched
+      // must not change underneath the playhead.
+      if (liveReady && appMode !== "replay" && !bufferBusy &&
           now - lastBufferPushTime > 1000 / BUFFER_FPS &&
           typeof createImageBitmap !== "undefined") {
         lastBufferPushTime = now;
@@ -1736,13 +1817,17 @@
           .finally(() => { bufferBusy = false; });
       }
 
-      // Prune every frame regardless of async outcome
-      const maxKeep = MAX_BUFFER_SECONDS * 1000;
-      while (frameBuffer.length && now - frameBuffer[0].timestamp > maxKeep) {
-        const old = frameBuffer.shift();
-        if (old.bitmap && old.bitmap.close) { try { old.bitmap.close(); } catch (e) {} }
+      // Prune every frame regardless of async outcome -- except in replay, where
+      // dropping the head would slide the clip out from under the playhead.
+      if (appMode !== "replay") {
+        const maxKeep = MAX_BUFFER_SECONDS * 1000;
+        while (frameBuffer.length && now - frameBuffer[0].timestamp > maxKeep) {
+          const old = frameBuffer.shift();
+          if (old.bitmap && old.bitmap.close) { try { old.bitmap.close(); } catch (e) {} }
+        }
+      } else if (frameBuffer.length) {
+        advanceReplay(now);
       }
-      if (appMode !== "delay" && frameBuffer.length) clearFrameBuffer();
 
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = "#020617";
@@ -1754,6 +1839,10 @@
       if (!liveReady) {
         videoRect = { x: 0, y: 0, w: w, h: h };
         drawSimulationGolfer(w, h);
+      } else if (appMode === "replay" && frameBuffer.length) {
+        const rf = frameBuffer[replayFrameIndex()];
+        if (rf && rf.bitmap) drawContain(rf.bitmap, rf.bitmap.width, rf.bitmap.height, w, h);
+        else drawContain(video, video.videoWidth, video.videoHeight, w, h);
       } else if (appMode === "live" || frameBuffer.length === 0) {
         drawContain(video, video.videoWidth, video.videoHeight, w, h);
       } else {
@@ -2154,20 +2243,74 @@
       showToast(isMirrored ? "Mirror on" : "Mirror off");
     });
 
+    const MODE_BTN_BASE = "px-3 py-1.5 rounded-lg text-xs font-semibold transition ";
+    const MODE_BTN_IDLE = "bg-slate-800 text-slate-400 border border-slate-700 hover:text-white";
+
+    function setAppMode(mode) {
+      // Refusing early keeps the button honest: nothing buffered means nothing
+      // to replay, and silently showing a frozen live frame would look broken.
+      if (mode === "replay" && !frameBuffer.length) {
+        showToast("Nothing recorded yet - give it a few seconds", 3000);
+        return;
+      }
+      appMode = mode;
+      btnModeLive.className = MODE_BTN_BASE + (mode === "live"
+        ? "bg-emerald-600 text-white shadow" : MODE_BTN_IDLE);
+      btnModeDelay.className = MODE_BTN_BASE + (mode === "delay"
+        ? "bg-amber-500 text-slate-950 shadow" : MODE_BTN_IDLE);
+      btnModeReplay.className = MODE_BTN_BASE + (mode === "replay"
+        ? "bg-sky-500 text-slate-950 shadow" : MODE_BTN_IDLE);
+      delayControls.classList.toggle("opacity-50", mode !== "delay");
+      delayControls.classList.toggle("pointer-events-none", mode !== "delay");
+      delayIndicator.classList.toggle("hidden", mode !== "delay");
+      replayBar.classList.toggle("hidden", mode !== "replay");
+
+      if (mode === "replay") {
+        replayIndex = 0;
+        replaySpeed = 1;
+        btnReplaySpeed.textContent = "1x";
+        setReplayPlaying(true);
+        syncReplayUi();
+        logLine("info", "Replay", {
+          frames: frameBuffer.length,
+          seconds: +(frameBuffer.length / BUFFER_FPS).toFixed(1)
+        });
+      } else {
+        replayPlaying = false;
+      }
+    }
+
+    btnModeReplay.addEventListener("click", () => setAppMode("replay"));
+
+    btnReplayPlay.addEventListener("click", () => setReplayPlaying(!replayPlaying));
+    btnReplayPrev.addEventListener("click", () => stepReplay(-1));
+    btnReplayNext.addEventListener("click", () => stepReplay(1));
+
+    // While a finger is down the playhead follows the thumb, so playback must
+    // not also be writing to it. "change" is the backstop: a pointerup that
+    // lands outside the element never reaches us, and a stuck flag would freeze
+    // the transport for good.
+    replayScrub.addEventListener("pointerdown", () => { replayScrubbing = true; });
+    ["pointerup", "pointercancel", "change"].forEach((ev) =>
+      replayScrub.addEventListener(ev, () => { replayScrubbing = false; }));
+    replayScrub.addEventListener("input", (e) => {
+      setReplayPlaying(false);
+      replayIndex = parseInt(e.target.value, 10) || 0;
+      syncReplayUi();
+    });
+
+    btnReplaySpeed.addEventListener("click", () => {
+      replaySpeed = REPLAY_SPEEDS[(REPLAY_SPEEDS.indexOf(replaySpeed) + 1) % REPLAY_SPEEDS.length];
+      btnReplaySpeed.textContent = replaySpeed === 1 ? "1x" : String(replaySpeed).replace("0.", ".") + "x";
+      replayLastTick = performance.now();
+    });
+
     btnModeLive.addEventListener("click", () => {
-      appMode = "live";
-      btnModeLive.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition";
-      btnModeDelay.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition";
-      delayControls.classList.add("opacity-50", "pointer-events-none");
-      delayIndicator.classList.add("hidden");
+      setAppMode("live");
     });
 
     btnModeDelay.addEventListener("click", () => {
-      appMode = "delay";
-      btnModeDelay.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 shadow transition";
-      btnModeLive.className = "px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition";
-      delayControls.classList.remove("opacity-50", "pointer-events-none");
-      delayIndicator.classList.remove("hidden");
+      setAppMode("delay");
       delayBadgeText.textContent = delaySeconds.toFixed(1) + "s delayed replay";
     });
 
@@ -2246,7 +2389,10 @@
 
     // Release the camera when backgrounded, reacquire on return
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) { clearFrameBuffer(); }
+      // Dropping the buffer on the way out is how the camera gets released
+      // cleanly, but doing it during replay throws away the clip the golfer
+      // paused on and came back to.
+      if (document.hidden) { if (appMode !== "replay") clearFrameBuffer(); }
       else if (!isSimulatedFeed && video.paused) { video.play().catch(() => {}); }
     });
 
