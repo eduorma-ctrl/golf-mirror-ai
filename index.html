@@ -1120,14 +1120,20 @@
         "1. clubHead: the clubhead where it meets the ground\n" +
         "2. gripHands: center of the hands on the grip\n" +
         "3. headCenter: center of the head\n" +
-        "4. tushLineX: outermost lateral silhouette edge of the glutes\n" +
+        "4. tushLineX: x of the rearmost point of the buttocks silhouette -- the vertical " +
+        "line a golfer's glutes stay in contact with. Read it from the body outline, not from " +
+        "clothing folds, and not from the back or thighs.\n" +
         "5. shaftAngleDegrees: measured shaft angle to horizontal. Do not snap to 45/50/55.\n" +
         "The club shaft is often thin, dark and low-contrast against a dark floor or mat. " +
         "Trace the straight line running from the hands down to the ground and follow it to its " +
         "lowest end; do not fall back on a generic address position. If the shaft genuinely " +
         "cannot be located, set detected to false rather than inventing coordinates.\n" +
+        "Set tushDetected false whenever the hips or glutes are out of frame, obscured, or you " +
+        "cannot place that edge to within roughly 3% of the frame width. A tush line in the wrong " +
+        "place is worse than no tush line at all, so do not guess this one.\n" +
         'Return only JSON: {"detected":true,"clubHead":{"x":350,"y":840},"gripHands":{"x":480,"y":580},' +
-        '"headCenter":{"x":500,"y":280},"tushLineX":620,"shaftAngleDegrees":49.2,"confidence":98}';
+        '"headCenter":{"x":500,"y":280},"tushDetected":true,"tushLineX":620,' +
+        '"shaftAngleDegrees":49.2,"confidence":98}';
 
       // Low thinking: coordinate localization is a perception task, so the extra
       // deliberation buys little here. The snapshot is already captured by this
@@ -1201,10 +1207,15 @@
         ghVy = clamp(norm(ai.gripHands  && ai.gripHands.y),  0.20, 0.92);
         hdVx = clamp(norm(ai.headCenter && ai.headCenter.x), 0.02, 0.98);
         hdVy = clamp(norm(ai.headCenter && ai.headCenter.y), 0.00, 0.60);
-        tuVx = clamp(norm(ai.tushLineX), 0.02, 0.98);
+        // null means "the model would only be guessing". The tush line is a fixed
+        // reference for early extension, so a wrong one actively misleads -- worse
+        // than leaving whatever the golfer already had.
+        tuVx = (ai.tushDetected === false || ai.tushLineX === undefined || ai.tushLineX === null)
+          ? null
+          : clamp(norm(ai.tushLineX), 0.02, 0.98);
         confidence = Number(ai.confidence) || 95;
         logLine("ok", "AI raw (0-1000)", { clubHead: ai.clubHead, gripHands: ai.gripHands, headCenter: ai.headCenter, tushLineX: ai.tushLineX, shaftAngleDegrees: ai.shaftAngleDegrees, confidence: ai.confidence });
-        logLine("info", "Mapped into video frame (0-1)", { club: [+chVx.toFixed(3), +chVy.toFixed(3)], hands: [+ghVx.toFixed(3), +ghVy.toFixed(3)], head: [+hdVx.toFixed(3), +hdVy.toFixed(3)], tushX: +tuVx.toFixed(3) });
+        logLine("info", "Mapped into video frame (0-1)", { club: [+chVx.toFixed(3), +chVy.toFixed(3)], hands: [+ghVx.toFixed(3), +ghVy.toFixed(3)], head: [+hdVx.toFixed(3), +hdVy.toFixed(3)], tushX: tuVx === null ? "not detected" : +tuVx.toFixed(3) });
       } else {
         // Documented no-key mode: geometric guides, same video-frame space.
         chVx = isLefty ? 0.65 : 0.35; chVy = 0.84;
@@ -1222,7 +1233,9 @@
       const chX = toCx(chVx), chY = toCy(chVy);
       const ghX = toCx(ghVx), ghY = toCy(ghVy);
       const headX = toCx(hdVx), headY = toCy(hdVy);
-      const tushX = toCx(tuVx);
+      // Keep the line already on screen (preset or hand-nudged) when the model declined.
+      const tushKept = tuVx === null;
+      const tushX = tushKept ? guides.hipLine.x : toCx(tuVx);
 
       // Extend clubhead->hands into the full shaft plane line. Shrink the extension
       // until both ends are on screen rather than clamping x and y independently:
@@ -1250,7 +1263,8 @@
 
       if (aiOk) {
         planeStatusText.textContent = "Shaft: " + angle + "° locked";
-        accuracyScoreText.textContent = "Confidence " + confidence + "%";
+        accuracyScoreText.textContent = "Confidence " + confidence + "%" + (tushKept ? " - tush kept" : "");
+        if (tushKept) logLine("warn", "Tush line not detected - kept the existing line at " + Math.round(tushX * 100) + "%");
         lockFlashOverlay.classList.remove("hidden");
         setTimeout(() => lockFlashOverlay.classList.add("hidden"), 450);
         playSuccessChime();
