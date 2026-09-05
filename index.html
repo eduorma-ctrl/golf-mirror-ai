@@ -317,11 +317,12 @@
 
       <div id="delay-controls" class="flex-1 flex items-center justify-end gap-2 opacity-50 pointer-events-none transition-opacity min-w-0">
         <label for="delay-slider" class="text-[11px] text-slate-400 whitespace-nowrap">Delay <span id="delay-label" class="font-bold text-amber-400">3.0s</span></label>
-        <input id="delay-slider" type="range" min="1" max="8" step="0.5" value="3" class="w-20 sm:w-32 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+        <input id="delay-slider" type="range" min="1" max="10" step="0.5" value="3" class="w-20 sm:w-32 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
       </div>
     </div>
 
-    <div id="replay-bar" class="hidden max-w-xl mx-auto mt-2 flex items-center gap-1.5">
+    <div id="replay-bar" class="hidden max-w-xl mx-auto mt-2 flex flex-col gap-1.5">
+     <div class="flex items-center gap-1.5">
       <button id="btn-replay-play" class="shrink-0 p-2 rounded-lg bg-sky-500 text-slate-950 active:scale-95 transition" title="Play / pause">
         <i data-lucide="pause" class="w-4 h-4"></i>
       </button>
@@ -334,6 +335,17 @@
       <input id="replay-scrub" type="range" min="0" max="1" step="1" value="0" class="flex-1 min-w-0 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-400" />
       <span id="replay-time" class="shrink-0 text-[10px] font-mono text-sky-300 w-14 text-right">0.0/0.0s</span>
       <button id="btn-replay-speed" class="shrink-0 px-2 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sky-300 text-[11px] font-bold active:scale-95 transition" title="Playback speed">1x</button>
+     </div>
+
+     <div class="flex items-center gap-1.5">
+      <button id="btn-save-frame" class="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-semibold active:scale-95 transition" title="Save this frame as a PNG">
+        <i data-lucide="image-down" class="w-3.5 h-3.5"></i> Save frame
+      </button>
+      <button id="btn-save-clip" class="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-semibold active:scale-95 transition" title="Record one pass of this clip to a video file">
+        <i data-lucide="download" class="w-3.5 h-3.5"></i> Save clip
+      </button>
+      <span id="export-status" class="text-[10px] text-slate-400 truncate"></span>
+     </div>
     </div>
   </footer>
 
@@ -519,7 +531,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-replay";
+    const BUILD = "2026-09-05-export";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -570,6 +582,12 @@
     let replayLastTick = 0;
     let replayScrubbing = false;
     const REPLAY_SPEEDS = [1, 0.5, 0.25];
+
+    // Clip export records the canvas as it plays, so it holds the transport for
+    // one pass. Tracked here so the transport can refuse input while it runs.
+    let clipRecorder = null;
+    let clipChunks = [];
+    let exportingClip = false;
 
     const guides = {
       planeLine: { enabled: true, start: { x: 0.35, y: 0.84 }, end: { x: 0.68, y: 0.22 } },
@@ -699,6 +717,9 @@
     const replayScrub = $("replay-scrub");
     const replayTime = $("replay-time");
     const btnReplaySpeed = $("btn-replay-speed");
+    const btnSaveFrame = $("btn-save-frame");
+    const btnSaveClip = $("btn-save-clip");
+    const exportStatus = $("export-status");
     const delayControls = $("delay-controls");
     const delaySlider = $("delay-slider");
     const delayLabel = $("delay-label");
@@ -1102,9 +1123,17 @@
         // Wall-clock rather than one-index-per-render: playback stays true to
         // the capture rate even when the render loop drops frames.
         replayIndex += (dt / 1000) * BUFFER_FPS * replaySpeed;
-        // Loop. The point of replay is watching the same two seconds again.
-        if (replayIndex >= frameBuffer.length) replayIndex = 0;
+        // Loop. The point of replay is watching the same two seconds again --
+        // except while exporting, where one pass is the whole file.
+        if (replayIndex >= frameBuffer.length) {
+          replayIndex = 0;
+          if (exportingClip) stopClipExport();
+        }
         syncReplayUi();
+        if (exportingClip) {
+          exportStatus.textContent = "Recording " +
+            (replayFrameIndex() / BUFFER_FPS).toFixed(1) + "s...";
+        }
       }
       replayLastTick = now;
     }
@@ -1130,6 +1159,127 @@
       if (replayIndex < 0) replayIndex = frameBuffer.length - 1;
       if (replayIndex > frameBuffer.length - 1) replayIndex = 0;
       syncReplayUi();
+    }
+
+    // Both exports read the main canvas, which already has the frame and the
+    // guides composited. No second draw path means the file cannot disagree
+    // with what the golfer was looking at when they tapped save.
+    function stamp() {
+      const d = new Date();
+      const p = (v) => String(v).padStart(2, "0");
+      return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" +
+        p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Revoking immediately can cancel the download on some mobile browsers.
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 15000);
+    }
+
+    function saveFrame() {
+      if (!canvas.toBlob) { showToast("This browser cannot save images", 4000); return; }
+      canvas.toBlob((blob) => {
+        if (!blob) { showToast("Could not save the frame", 4000); logLine("error", "Frame export produced no blob"); return; }
+        const name = "golf-" + stamp() + ".png";
+        downloadBlob(blob, name);
+        exportStatus.textContent = "Saved " + name;
+        logLine("ok", "Frame saved", { name: name, kb: Math.round(blob.size / 1024) });
+      }, "image/png");
+    }
+
+    // Ordered best-first. An empty result means this browser cannot record,
+    // which is a real outcome on iOS rather than an error to work around.
+    const CLIP_TYPES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"];
+
+    function pickClipType() {
+      if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return null;
+      for (let i = 0; i < CLIP_TYPES.length; i++) {
+        if (MediaRecorder.isTypeSupported(CLIP_TYPES[i])) return CLIP_TYPES[i];
+      }
+      return null;
+    }
+
+    function startClipExport() {
+      if (exportingClip) return;
+      if (!frameBuffer.length) { showToast("Nothing to save", 3000); return; }
+      if (!canvas.captureStream) {
+        showToast("This browser cannot record video - use Save frame", 5000);
+        logLine("warn", "Clip export unavailable: no captureStream");
+        return;
+      }
+      const type = pickClipType();
+      if (!type) {
+        showToast("This browser cannot record video - use Save frame", 5000);
+        logLine("warn", "Clip export unavailable: no supported container");
+        return;
+      }
+      let stream;
+      try {
+        stream = canvas.captureStream(30);
+        clipRecorder = new MediaRecorder(stream, { mimeType: type });
+      } catch (err) {
+        showToast("Could not start recording", 4000);
+        logLine("error", "Clip export failed to start: " + err);
+        return;
+      }
+      clipChunks = [];
+      clipRecorder.ondataavailable = (e) => { if (e.data && e.data.size) clipChunks.push(e.data); };
+      clipRecorder.onstop = () => {
+        const blob = new Blob(clipChunks, { type: type });
+        clipChunks = [];
+        const name = "golf-" + stamp() + (type.indexOf("mp4") >= 0 ? ".mp4" : ".webm");
+        if (!blob.size) {
+          exportStatus.textContent = "Recording produced nothing";
+          logLine("error", "Clip export produced an empty blob");
+        } else {
+          downloadBlob(blob, name);
+          exportStatus.textContent = "Saved " + name;
+          logLine("ok", "Clip saved", { name: name, kb: Math.round(blob.size / 1024), type: type });
+        }
+        setClipExportUi(false);
+      };
+
+      exportingClip = true;
+      setClipExportUi(true);
+      replayIndex = 0;
+      replaySpeed = 1;
+      btnReplaySpeed.textContent = "1x";
+      setReplayPlaying(true);
+      clipRecorder.start();
+      logLine("info", "Clip export started", {
+        type: type,
+        seconds: +(frameBuffer.length / BUFFER_FPS).toFixed(1)
+      });
+    }
+
+    function stopClipExport() {
+      exportingClip = false;
+      setReplayPlaying(false);
+      if (clipRecorder && clipRecorder.state !== "inactive") {
+        try { clipRecorder.stop(); } catch (e) { setClipExportUi(false); }
+      } else {
+        setClipExportUi(false);
+      }
+      clipRecorder = null;
+    }
+
+    // The transport drives the recording, so letting it be touched mid-pass
+    // would put whatever the golfer did into the file.
+    function setClipExportUi(busy) {
+      [btnReplayPlay, btnReplayPrev, btnReplayNext, btnReplaySpeed, replayScrub, btnSaveFrame, btnSaveClip]
+        .forEach((el) => {
+          el.disabled = busy;
+          el.classList.toggle("opacity-40", busy);
+          el.classList.toggle("pointer-events-none", busy);
+        });
+      if (busy) exportStatus.textContent = "Recording...";
     }
 
     function clearFrameBuffer() {
@@ -2253,6 +2403,9 @@
         showToast("Nothing recorded yet - give it a few seconds", 3000);
         return;
       }
+      // Walking out mid-record would otherwise keep capturing the live feed
+      // into a file the golfer asked to be of their replay.
+      if (exportingClip && mode !== "replay") stopClipExport();
       appMode = mode;
       btnModeLive.className = MODE_BTN_BASE + (mode === "live"
         ? "bg-emerald-600 text-white shadow" : MODE_BTN_IDLE);
@@ -2266,6 +2419,7 @@
       replayBar.classList.toggle("hidden", mode !== "replay");
 
       if (mode === "replay") {
+        exportStatus.textContent = "";
         replayIndex = 0;
         replaySpeed = 1;
         btnReplaySpeed.textContent = "1x";
@@ -2298,6 +2452,9 @@
       replayIndex = parseInt(e.target.value, 10) || 0;
       syncReplayUi();
     });
+
+    btnSaveFrame.addEventListener("click", saveFrame);
+    btnSaveClip.addEventListener("click", startClipExport);
 
     btnReplaySpeed.addEventListener("click", () => {
       replaySpeed = REPLAY_SPEEDS[(REPLAY_SPEEDS.indexOf(replaySpeed) + 1) % REPLAY_SPEEDS.length];
