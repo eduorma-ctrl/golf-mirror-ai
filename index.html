@@ -1187,22 +1187,21 @@
       let chVx, chVy, ghVx, ghVy, hdVx, hdVy, tuVx;
 
       if (aiOk) {
-        // Descale Gemini's 0-1000 scale, then undo the mirror: render() draws the
-        // video through a flipped transform, so the pixels we captured are mirrored
-        // while the guides themselves are drawn unmirrored.
-        const nx = (v) => {
-          const n = clamp(Number(v) / 1000, 0, 1);
-          return capturedMirrored ? 1 - n : n;
-        };
-        const ny = (v) => clamp(Number(v) / 1000, 0, 1);
+        // Descale Gemini's native 0-1000 scale. Do NOT flip x for the mirror: the
+        // mirror is already baked into the canvas pixels when the video is drawn,
+        // snapshotFrame() crops those pixels, so Gemini analysed the frame exactly
+        // as it appears on screen -- and drawGuides() runs after ctx.restore(), so
+        // the guides live in that same screen space. The two spaces already agree.
+        // Flipping here double-mirrored every result (club 272 landed at 0.728).
+        const norm = (v) => clamp(Number(v) / 1000, 0, 1);
 
-        chVx = clamp(nx(ai.clubHead   && ai.clubHead.x),   0.02, 0.98);
-        chVy = clamp(ny(ai.clubHead   && ai.clubHead.y),   0.45, 1.00);
-        ghVx = clamp(nx(ai.gripHands  && ai.gripHands.x),  0.02, 0.98);
-        ghVy = clamp(ny(ai.gripHands  && ai.gripHands.y),  0.20, 0.92);
-        hdVx = clamp(nx(ai.headCenter && ai.headCenter.x), 0.02, 0.98);
-        hdVy = clamp(ny(ai.headCenter && ai.headCenter.y), 0.00, 0.60);
-        tuVx = clamp(nx(ai.tushLineX), 0.02, 0.98);
+        chVx = clamp(norm(ai.clubHead   && ai.clubHead.x),   0.02, 0.98);
+        chVy = clamp(norm(ai.clubHead   && ai.clubHead.y),   0.45, 1.00);
+        ghVx = clamp(norm(ai.gripHands  && ai.gripHands.x),  0.02, 0.98);
+        ghVy = clamp(norm(ai.gripHands  && ai.gripHands.y),  0.20, 0.92);
+        hdVx = clamp(norm(ai.headCenter && ai.headCenter.x), 0.02, 0.98);
+        hdVy = clamp(norm(ai.headCenter && ai.headCenter.y), 0.00, 0.60);
+        tuVx = clamp(norm(ai.tushLineX), 0.02, 0.98);
         confidence = Number(ai.confidence) || 95;
         logLine("ok", "AI raw (0-1000)", { clubHead: ai.clubHead, gripHands: ai.gripHands, headCenter: ai.headCenter, tushLineX: ai.tushLineX, shaftAngleDegrees: ai.shaftAngleDegrees, confidence: ai.confidence });
         logLine("info", "Mapped into video frame (0-1)", { club: [+chVx.toFixed(3), +chVy.toFixed(3)], hands: [+ghVx.toFixed(3), +ghVy.toFixed(3)], head: [+hdVx.toFixed(3), +hdVy.toFixed(3)], tushX: +tuVx.toFixed(3) });
