@@ -491,7 +491,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-cleanfall";
+    const BUILD = "2026-09-05-guard";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -1234,6 +1234,21 @@
 
     // ---------- Scan ----------
     async function executeMultiFrameBurstScan() {
+      // Scanning before layout settles sent Gemini a 1x1 image and then mapped the
+      // answer through a zero-sized videoRect. Refuse instead of producing nonsense.
+      if (!(canvas.clientWidth > 0 && canvas.clientHeight > 0 && videoRect.w > 1 && videoRect.h > 1)) {
+        logLine("error", "Scan aborted: view not ready", {
+          canvasCss: (canvas.clientWidth || 0) + "x" + (canvas.clientHeight || 0),
+          videoRect: { w: Math.round(videoRect.w), h: Math.round(videoRect.h) }
+        });
+        planeStatusText.textContent = "No lock";
+        accuracyScoreText.textContent = "View not ready";
+        accuracyScoreText.classList.remove("text-emerald-400");
+        accuracyScoreText.classList.add("text-amber-400");
+        showToast("View not ready yet - give it a moment and scan again", 4000);
+        return;
+      }
+
       scanOverlay.classList.remove("hidden");
       scanBurstProgress.textContent = userApiKey ? "Analyzing address stance" : "Using geometric fallback";
 
