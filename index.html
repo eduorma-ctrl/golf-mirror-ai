@@ -536,7 +536,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-autoswing";
+    const BUILD = "2026-09-05-trueorient";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -665,14 +665,25 @@
     // whenever that happened, which is fatal for a tush line whose entire value is
     // sitting exactly where the glutes are. These convert at draw and hit-test time.
     // The fallbacks matter before the first frame, when videoRect is still zero.
+    // A mirror is right for practising and wrong for a file you keep, so exports
+    // drop it. Guides live in screen space (invariant 2), so dropping it for the
+    // video alone would leave the tush line on the wrong side of the golfer --
+    // both have to move together, and this mapping is where the guides move.
+    // Read in exactly two places: here, and the video draw.
+    let unmirrorForExport = false;
+    function mirrorActive() { return isMirrored && !unmirrorForExport; }
+    function exportFlipX() { return unmirrorForExport && isMirrored; }
+
     function vidToPxX(vx) {
-      return videoRect.w > 0 ? videoRect.x + vx * videoRect.w : vx * (canvas.clientWidth || 1);
+      const x = exportFlipX() ? 1 - vx : vx;
+      return videoRect.w > 0 ? videoRect.x + x * videoRect.w : x * (canvas.clientWidth || 1);
     }
     function vidToPxY(vy) {
       return videoRect.h > 0 ? videoRect.y + vy * videoRect.h : vy * (canvas.clientHeight || 1);
     }
     function pxToVidX(px) {
-      return videoRect.w > 0 ? (px - videoRect.x) / videoRect.w : px / (canvas.clientWidth || 1);
+      const v = videoRect.w > 0 ? (px - videoRect.x) / videoRect.w : px / (canvas.clientWidth || 1);
+      return exportFlipX() ? 1 - v : v;
     }
     function pxToVidY(py) {
       return videoRect.h > 0 ? (py - videoRect.y) / videoRect.h : py / (canvas.clientHeight || 1);
@@ -1305,6 +1316,20 @@
 
     function saveFrame() {
       if (!canvas.toBlob) { showToast("This browser cannot save images", 4000); return; }
+      if (isMirrored && !unmirrorForExport) {
+        // Same rule as the clip: what you keep is not mirrored. toBlob reads the
+        // canvas as it stands, so the flag has to outlive a repaint before the
+        // read -- two frames, because the first only schedules the draw.
+        unmirrorForExport = true;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          try { saveFrameNow(); } finally { unmirrorForExport = false; }
+        }));
+        return;
+      }
+      saveFrameNow();
+    }
+
+    function saveFrameNow() {
       canvas.toBlob((blob) => {
         if (!blob) { showToast("Could not save the frame", 4000); logLine("error", "Frame export produced no blob"); return; }
         const name = "golf-" + stamp() + ".png";
@@ -1391,6 +1416,9 @@
         logLine("error", "Clip export failed at start(): " + err);
         return;
       }
+      // After start(), never before: the failure path above must not be able to
+      // leave the guides flipped on the golfer's screen.
+      unmirrorForExport = isMirrored;
       logLine("info", "Clip export started", {
         type: type,
         seconds: +(replaySourceFrames().length / replayFps).toFixed(1),
@@ -1408,6 +1436,10 @@
 
     function stopClipExport() {
       exportingClip = false;
+      // The single place this is cleared. Every way an export can end -- the
+      // loop wrapping, the watchdog, backgrounding, leaving replay -- comes
+      // through here.
+      unmirrorForExport = false;
       setReplayPlaying(false);
       if (clipRecorder && clipRecorder.state !== "inactive") {
         // onstop does the release and the UI; only the failure path needs both
@@ -2262,7 +2294,7 @@
       ctx.fillRect(0, 0, w, h);
 
       ctx.save();
-      if (isMirrored) { ctx.translate(w, 0); ctx.scale(-1, 1); }
+      if (mirrorActive()) { ctx.translate(w, 0); ctx.scale(-1, 1); }
 
       if (!liveReady) {
         videoRect = { x: 0, y: 0, w: w, h: h };
@@ -2451,6 +2483,10 @@
 
     function onPointerDown(e) {
       unlockMobileAudio();
+      // Guides must not move during an export -- the recording would show them
+      // jumping, and while unmirrorForExport is set getCanvasCoords and
+      // pxToVidX would each flip x, cancelling out and dragging the wrong way.
+      if (exportingClip) return;
       const pos = getCanvasCoords(e);
       const w = canvas.clientWidth || 1;
       const h = canvas.clientHeight || 1;
@@ -2615,6 +2651,10 @@
 
     btnInstantScan.addEventListener("click", () => {
       unlockMobileAudio();
+      // Gemini's points come back in the screen space the guides live in, and
+      // for the length of an export that space is mirrored away from what the
+      // snapshot would show.
+      if (exportingClip) { showToast("Finish saving the clip first", 3000); return; }
       if (isCountingDown) cancelHandsFreeTimer();
       executeMultiFrameBurstScan();
     });
