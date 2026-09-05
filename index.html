@@ -92,7 +92,7 @@
 <body class="bg-slate-950 text-slate-100 flex flex-col w-full overflow-hidden select-none">
 
   <!-- Top Header Bar -->
-  <header class="min-h-14 bg-slate-900/95 backdrop-blur border-b border-slate-800 flex items-center justify-between gap-2 px-2 sm:px-4 z-30 shrink-0">
+  <header id="app-header" class="min-h-14 bg-slate-900/95 backdrop-blur border-b border-slate-800 flex items-center justify-between gap-2 px-2 sm:px-4 z-30 shrink-0 transition-opacity duration-300">
     <div class="flex items-center space-x-2 shrink-0">
       <div class="p-2 bg-emerald-500/20 text-emerald-400 rounded-lg border border-emerald-500/30">
         <i data-lucide="crosshair" class="w-5 h-5"></i>
@@ -158,6 +158,11 @@
         <i data-lucide="camera" class="w-4 h-4"></i>
       </button>
 
+      <!-- Practice focus -->
+      <button id="btn-focus" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white active:scale-95 transition" title="Practice view: hide everything but the guides">
+        <i data-lucide="maximize" class="w-4 h-4"></i>
+      </button>
+
       <!-- Mirror Flip -->
       <button id="btn-toggle-mirror" class="shrink-0 p-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white active:scale-95 transition" title="Toggle Mirror Orientation">
         <i data-lucide="flip-horizontal" class="w-4 h-4"></i>
@@ -188,6 +193,11 @@
         Continue in simulation mode
       </button>
     </div>
+
+    <!-- Focus mode: the one way back -->
+    <button id="btn-exit-focus" class="hidden absolute top-3 right-3 z-30 p-2.5 rounded-full bg-slate-900/50 backdrop-blur border border-slate-700/50 text-slate-400 hover:text-white active:scale-95 transition shadow-lg" title="Show controls">
+      <i data-lucide="eye" class="w-4 h-4"></i>
+    </button>
 
     <!-- Framing Reticle -->
     <div id="framing-reticle" class="absolute inset-0 pointer-events-none flex items-center justify-center z-10 transition-opacity duration-300">
@@ -246,7 +256,7 @@
     </div>
 
     <!-- Guide Toggles -->
-    <div class="absolute top-3 right-3 flex flex-col gap-1.5 sm:gap-2 z-20">
+    <div id="guide-toggles" class="absolute top-3 right-3 flex flex-col gap-1.5 sm:gap-2 z-20">
       <button id="btn-guide-plane" class="p-2 sm:p-2.5 rounded-xl bg-slate-900/85 backdrop-blur border border-emerald-500/60 text-emerald-400 hover:text-white transition shadow-lg active:scale-95" title="Shaft Plane Line">
         <i data-lucide="trending-up" class="w-4 h-4 sm:w-5 sm:h-5"></i>
       </button>
@@ -291,7 +301,7 @@
   </main>
 
   <!-- Bottom Controls -->
-  <footer class="bg-slate-900 border-t border-slate-800 px-3 py-2.5 z-30 shrink-0">
+  <footer id="app-footer" class="bg-slate-900 border-t border-slate-800 px-3 py-2.5 z-30 shrink-0 transition-opacity duration-300">
     <div class="max-w-xl mx-auto flex items-center justify-between gap-3">
       <div class="flex items-center gap-1.5 shrink-0">
         <button id="btn-mode-live" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white shadow transition">
@@ -491,7 +501,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-tushbody";
+    const BUILD = "2026-09-05-focus";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -659,6 +669,50 @@
     const aiSetupText = $("ai-setup-text");
     const aiPlaneText = $("ai-plane-text");
     const aiDrillText = $("ai-drill-text");
+
+    const appHeader = $("app-header");
+    const appFooter = $("app-footer");
+    const guideToggles = $("guide-toggles");
+    const tushAdjustWidget = $("tush-adjust-widget");
+    const planeStatusBadge = $("plane-status-badge");
+    const diagnosticsPill = $("diagnostics-pill");
+    const btnFocus = $("btn-focus");
+    const btnExitFocus = $("btn-exit-focus");
+
+    // Practice view: strip the interface back to just the guide lines.
+    //
+    // The header and footer are FADED rather than removed. They occupy layout, so
+    // removing them would let the canvas grow, re-fit the video, and shift every
+    // guide about 9px off the body -- the guides are stored in canvas-normalized
+    // coordinates. Absolutely positioned overlays take no layout space, so those
+    // can be hidden outright.
+    let focusMode = false;
+
+    function setFocusMode(on) {
+      focusMode = !!on;
+
+      [appHeader, appFooter].forEach((el) => {
+        if (!el) return;
+        el.classList.toggle("opacity-0", focusMode);
+        el.classList.toggle("pointer-events-none", focusMode);
+      });
+
+      [guideToggles, tushAdjustWidget, planeStatusBadge, diagnosticsPill].forEach((el) => {
+        if (el) el.classList.toggle("hidden", focusMode);
+      });
+
+      if (focusMode) {
+        framingReticle.classList.add("hidden");
+        delayIndicator.classList.add("hidden");
+      } else {
+        // Restore what the golfer had chosen, rather than blanket-showing things.
+        framingReticle.classList.toggle("hidden", !showFramingReticle);
+        delayIndicator.classList.toggle("hidden", appMode !== "delay");
+      }
+
+      btnExitFocus.classList.toggle("hidden", !focusMode);
+      if (window.lucide) lucide.createIcons();
+    }
 
     const logModal = $("log-modal");
     const logBody = $("log-body");
@@ -1442,6 +1496,9 @@
         if (tushKept) logLine("warn", "Tush line not detected - kept the existing line at " + Math.round(tushX * 100) + "%");
         lockFlashOverlay.classList.remove("hidden");
         setTimeout(() => lockFlashOverlay.classList.add("hidden"), 450);
+        // A confirmed lock is exactly when the interface stops being useful and
+        // starts being in the way.
+        setFocusMode(true);
         playSuccessChime();
         speakVoice("Locked. Shaft at " + angle + " degrees.");
         logLine("ok", "Locked at " + angle + " deg", { canvasNorm: { club: [+chX.toFixed(3), +chY.toFixed(3)], top: [+topX.toFixed(3), +topY.toFixed(3)], head: [+headX.toFixed(3), +headY.toFixed(3)], tushX: +tushX.toFixed(3) }, ext: +ext.toFixed(2), confidence: confidence });
@@ -2040,6 +2097,16 @@
     btnReAnalyze.addEventListener("click", analyzeCurrentSwing);
     btnCloseModal.addEventListener("click", () => aiModal.classList.add("hidden"));
     aiModal.addEventListener("click", (e) => { if (e.target === aiModal) aiModal.classList.add("hidden"); });
+
+    btnFocus.addEventListener("click", () => {
+      unlockMobileAudio();
+      setFocusMode(true);
+      showToast("Practice view. Tap the eye to bring the controls back.", 3500);
+    });
+    btnExitFocus.addEventListener("click", () => setFocusMode(false));
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && focusMode) setFocusMode(false);
+    });
 
     btnOpenLog.addEventListener("click", () => {
       renderLog();
