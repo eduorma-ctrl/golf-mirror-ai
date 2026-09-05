@@ -4,9 +4,10 @@ Single-file web app: `index.html`, no build step, no dependencies beyond two CDN
 Live at https://golf-mirror-ai.pages.dev — Cloudflare Pages, auto-deploys on push
 to `main`, usually live within ~60s.
 
-Down-the-line swing mirror for solo range practice: draggable shaft-plane, Hogan
-corridor, head-stability ring and tush line over a live camera feed, with a
-hands-free countdown, delayed replay, and Gemini vision for stance detection.
+Swing mirror for solo range practice, down-the-line or face-on: draggable
+shaft-plane, Hogan corridor, head-stability ring and tush/sway line over a live
+camera feed, with a hands-free countdown, delayed replay, a scrubbable replay
+that can be saved as a still or a clip, and Gemini vision for stance detection.
 
 ---
 
@@ -75,6 +76,40 @@ for guides to appear, not holding the stance.
 
 ---
 
+## The frame buffer, and its three readers
+
+`frameBuffer` holds the last `MAX_BUFFER_SECONDS` as `ImageBitmap`s. It is the
+recording, and it always was — delay mode never did anything but read it at a
+fixed offset from now. Replay was mostly a matter of freezing it and pointing a
+playhead at it rather than a capture pipeline.
+
+| Reader | How it reads |
+| --- | --- |
+| Live | not at all; draws the video element |
+| Delay | the frame nearest `now - delaySeconds` |
+| Replay | `frameBuffer[replayIndex]`, playhead driven by the transport |
+
+Three things about it are load-bearing:
+
+- **It fills in every mode except replay.** It used to fill only in delay, and be
+  released on the way out, so a swing hit in Live was gone before you could ask
+  to see it. The cost is that the ceiling is now occupied permanently.
+- **Nothing may mutate it during replay** — not the pruner, not a late
+  `createImageBitmap`, not the backgrounding handler. The clip is measured on
+  entry (`measureBufferFps`) and the playhead indexes into it; change the array
+  underneath and the clip erodes while it plays, which reads as a rendering bug.
+- **Memory is capped by frames as well as by age.** Pruning by age alone let the
+  frame rate set the memory bill. With both caps the rate/duration trade is
+  automatic: ask for more fps and you keep fewer seconds, at constant memory.
+
+Export reads the main canvas, which already has the frame and the guides
+composited on it — a still via `toBlob`, a clip via `captureStream` +
+`MediaRecorder` recording one pass in real time. Real time is the price of
+reusing the on-screen render, and it buys a file that cannot disagree with what
+the golfer was looking at.
+
+---
+
 ## Invariants that are easy to break
 
 1. **Never send the model a frame with the guides drawn on it.** `render()` paints
@@ -107,7 +142,30 @@ for guides to appear, not holding the stance.
    guides), error or empty frame (No lock + the actual reason, existing guides left
    untouched). A confident-looking wrong answer is worse than a visible failure.
 
-7. **The tush line must sit on the golfer.** The model will otherwise latch onto
+7. **Playback timing must come from the buffer, never from `BUFFER_FPS`.** The
+   buffer rarely fills at exactly the target: `createImageBitmap` has to keep up,
+   `bufferBusy` silently drops any frame where it does not, and the camera may
+   deliver less than asked. Driving replay from the constant made it run fast and
+   the clock lie, and the gap widens every time the target goes up.
+   `measureBufferFps()` reads the real rate off the frame timestamps; use
+   `replayFps` for speed and for every readout. Its appearance in the log as
+   `actualFps` against `targetFps` is also the only honest answer to "should we
+   ask for 60".
+
+8. **The frame gate needs slack.** `now - last > 1000 / BUFFER_FPS` is
+   `> 33.333...` at 30fps, and two rAF intervals on a 60Hz screen land at 33.33 —
+   not greater. Capture waited a third interval and quietly ran at 20fps. Compare
+   against `BUFFER_GAP_MS`, which carries a few ms of tolerance, and never
+   against the bare period.
+
+9. **A recording must be able to end without the render loop.** `advanceReplay()`
+   notices the loop wrapping and stops `MediaRecorder`, and it only runs while
+   the buffer has frames — so emptying the buffer mid-record (flip the camera)
+   or stopping rAF (background the page) left the recorder running until reload.
+   The watchdog in `render()` and the `visibilitychange` handler both exist for
+   that; keep them outside any buffer-length gate.
+
+10. **The tush line must sit on the golfer.** The model will otherwise latch onto
    background objects — it once put it on a backpack on the floor. The prompt names
    furniture, bags, beds, walls and doors as *not the golfer*, and the model may set
    `tushDetected: false`, in which case the existing line is kept rather than moved
@@ -139,7 +197,15 @@ for guides to appear, not holding the stance.
 | Video stretched, breaking overlay geometry | `drawContain()` |
 | Drag handles moved the wrong way when mirrored | pointer x inverted — **see open items** |
 | Head reticle drew a diagonal | `lineTo(cx, cy + 10)` |
-| Frame buffer leaked inside an async `.then()` | prunes every frame, records only in delay mode |
+| Frame buffer leaked inside an async `.then()` | prunes every frame |
+| Buffer filled only in delay mode, so a swing hit in Live was unreplayable | fills in every mode except replay |
+| Pruner, late bitmaps and backgrounding all mutated the buffer mid-replay | each guarded; late bitmaps discarded and closed |
+| Frame gate `> 1000/fps` fell on the wrong side of two 60Hz rAF intervals, capping capture at 20fps | `BUFFER_GAP_MS` tolerance |
+| Memory scaled with frame rate, uncapped | `MAX_BUFFER_FRAMES` beside the age cap |
+| Clip export could never stop if the buffer emptied or the page was hidden | watchdog outside the buffer gate, plus stop-on-hidden |
+| `MediaRecorder.start()` outside the try/catch guarding the constructor | inside it, unwinds the disabled transport |
+| `captureStream` tracks never stopped, leaving a live 30fps capture per export | `releaseClipStream()` |
+| Scrub `input` paused playback every pointer tick, running a document-wide `lucide.createIcons()` | pauses once, on the tick that pauses |
 | Shaft angle computed in normalized units | `screenAngleDeg()` uses real screen pixels |
 
 ---
@@ -161,11 +227,20 @@ for guides to appear, not holding the stance.
 6. **Boot log reports `canvas 300x150`** because it logs before layout settles.
    Cosmetic; the `Scan start` line has the real numbers.
 7. **A/B the models** on the range — 3.7 Flash vs 3 Pro Preview.
-8. **Face-On is a thin mode.** It presets a vertical plane line and passes its label
-   into the prompt, and that is all. The geometric fallback branches only on
-   `isLefty`, so Face-On silently receives the Righty DTL coordinates, and the tush
-   line and Hogan corridor are down-the-line concepts with no face-on meaning. Either
-   make it a real mode or remove it.
+8. **Should the buffer run at 60fps?** Unanswered until someone reads `actualFps`
+   against `targetFps` in a `Replay` log line, and `cameraFps` on `Camera
+   connected`. Short of target means the bottleneck is `createImageBitmap`, not
+   the camera, and 60 would buy nothing while costing memory for frames that
+   never arrive. The frame cap means 60 would halve the clip to 5s rather than
+   double the memory, which is the right trade but should be a choice.
+9. **Clip export is untested off Android Chrome.** iOS Safari is the expected
+   casualty: the code reports missing `MediaRecorder`, missing `captureStream` or
+   an unsupported container rather than failing quietly, and Save frame works
+   regardless, but nobody has watched it happen.
+10. **The no-key fallback assumes an unmirrored right-hander in face-on.** It
+   hardcodes the trail hip to camera-left. With mirror on it is on the wrong
+   side. Only affects no-key mode — a scan reads the hip off the body and is
+   unaffected — so it has been left alone.
 
 ---
 
