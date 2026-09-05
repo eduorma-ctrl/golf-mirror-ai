@@ -531,7 +531,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-export";
+    const BUILD = "2026-09-05-fps30";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -569,7 +569,9 @@
     // Raw bitmaps, so this is the wrong lever to keep pulling. Much past ten
     // seconds and a phone will feel it; longer clips want MediaRecorder.
     const MAX_BUFFER_SECONDS = 10;
-    const BUFFER_FPS = 20;
+    // A clubhead at impact moves ~45 m/s: at 20fps it crossed more than two
+    // metres between frames and a frame at impact essentially never happened.
+    const BUFFER_FPS = 30;
     let lastBufferPushTime = 0;
     let bufferBusy = false;
 
@@ -581,6 +583,10 @@
     let replaySpeed = 1;
     let replayLastTick = 0;
     let replayScrubbing = false;
+    // The rate the buffer actually achieved, which is not BUFFER_FPS whenever
+    // createImageBitmap fell behind or the camera delivered less. Measured on
+    // entry to replay so playback speed and the clock stay true either way.
+    let replayFps = BUFFER_FPS;
     const REPLAY_SPEEDS = [1, 0.5, 0.25];
 
     // Clip export records the canvas as it plays, so it holds the transport for
@@ -1057,7 +1063,10 @@
       camActiveDot.className = "w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0";
       camDiagText.textContent = "Camera: requesting permission";
 
+      // frameRate is "ideal", never "exact": a camera that cannot do 60 should
+      // still connect at whatever it has rather than fall down the ladder.
       const constraintOptions = [
+        { video: { facingMode: { ideal: currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } }, audio: false },
         { video: { facingMode: { ideal: currentFacingMode }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
         { video: { facingMode: currentFacingMode }, audio: false },
         { video: true, audio: false }
@@ -1092,12 +1101,22 @@
         const s = track ? track.getSettings() : {};
         const resW = s.width || video.videoWidth || 1280;
         const resH = s.height || video.videoHeight || 720;
+        // What it granted, not what we asked for. Without this the buffer rate
+        // was a guess about a number nobody had ever looked at.
+        const camFps = s.frameRate ? Math.round(s.frameRate) : null;
+        const fpsLabel = camFps ? " @" + camFps : "";
         const facingLabel = currentFacingMode === "environment" ? "Rear" : "Front";
 
         streamStatusText.textContent = facingLabel + " live";
         camActiveDot.className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0";
-        camDiagText.textContent = "Camera: " + facingLabel + " " + resW + "x" + resH;
-        logLine("ok", "Camera connected", { facing: facingLabel, res: resW + "x" + resH });
+        camDiagText.textContent = "Camera: " + facingLabel + " " + resW + "x" + resH + fpsLabel;
+        logLine("ok", "Camera connected", {
+          facing: facingLabel,
+          res: resW + "x" + resH,
+          cameraFps: camFps,
+          requestedFps: 60,
+          bufferTargetFps: BUFFER_FPS
+        });
         showToast("Camera connected: " + facingLabel);
       } catch (playErr) {
         enableSimulationMode("playback blocked");
@@ -1113,6 +1132,13 @@
       logLine("warn", "Simulation mode" + (reason ? ": " + reason : ""));
     }
 
+    function measureBufferFps() {
+      if (frameBuffer.length < 2) return BUFFER_FPS;
+      const span = frameBuffer[frameBuffer.length - 1].timestamp - frameBuffer[0].timestamp;
+      if (span <= 0) return BUFFER_FPS;
+      return (frameBuffer.length - 1) / (span / 1000);
+    }
+
     function replayFrameIndex() {
       return Math.max(0, Math.min(frameBuffer.length - 1, Math.floor(replayIndex)));
     }
@@ -1122,7 +1148,7 @@
         const dt = now - replayLastTick;
         // Wall-clock rather than one-index-per-render: playback stays true to
         // the capture rate even when the render loop drops frames.
-        replayIndex += (dt / 1000) * BUFFER_FPS * replaySpeed;
+        replayIndex += (dt / 1000) * replayFps * replaySpeed;
         // Loop. The point of replay is watching the same two seconds again --
         // except while exporting, where one pass is the whole file.
         if (replayIndex >= frameBuffer.length) {
@@ -1132,7 +1158,7 @@
         syncReplayUi();
         if (exportingClip) {
           exportStatus.textContent = "Recording " +
-            (replayFrameIndex() / BUFFER_FPS).toFixed(1) + "s...";
+            (replayFrameIndex() / replayFps).toFixed(1) + "s...";
         }
       }
       replayLastTick = now;
@@ -1142,8 +1168,8 @@
       const total = frameBuffer.length;
       replayScrub.max = String(Math.max(1, total - 1));
       if (!replayScrubbing) replayScrub.value = String(replayFrameIndex());
-      replayTime.textContent = (replayFrameIndex() / BUFFER_FPS).toFixed(1) + "/" +
-        (total / BUFFER_FPS).toFixed(1) + "s";
+      replayTime.textContent = (replayFrameIndex() / replayFps).toFixed(1) + "/" +
+        (total / replayFps).toFixed(1) + "s";
     }
 
     function setReplayPlaying(playing) {
@@ -1255,7 +1281,8 @@
       clipRecorder.start();
       logLine("info", "Clip export started", {
         type: type,
-        seconds: +(frameBuffer.length / BUFFER_FPS).toFixed(1)
+        seconds: +(frameBuffer.length / replayFps).toFixed(1),
+        actualFps: +replayFps.toFixed(1)
       });
     }
 
@@ -2423,11 +2450,16 @@
         replayIndex = 0;
         replaySpeed = 1;
         btnReplaySpeed.textContent = "1x";
+        replayFps = measureBufferFps();
         setReplayPlaying(true);
         syncReplayUi();
+        // actualFps against target is the whole answer on whether 60 is worth
+        // asking for: short of target here means the pipeline, not the camera.
         logLine("info", "Replay", {
           frames: frameBuffer.length,
-          seconds: +(frameBuffer.length / BUFFER_FPS).toFixed(1)
+          seconds: +(frameBuffer.length / replayFps).toFixed(1),
+          actualFps: +replayFps.toFixed(1),
+          targetFps: BUFFER_FPS
         });
       } else {
         replayPlaying = false;
