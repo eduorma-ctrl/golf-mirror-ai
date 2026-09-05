@@ -531,7 +531,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-fps30";
+    const BUILD = "2026-09-05-hardened";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -572,6 +572,18 @@
     // A clubhead at impact moves ~45 m/s: at 20fps it crossed more than two
     // metres between frames and a frame at impact essentially never happened.
     const BUFFER_FPS = 30;
+
+    // Pruning by age alone let the frame rate set the memory bill: 10s went
+    // from 200 frames to 300 when the rate rose, and 60fps would have made it
+    // 600 without anyone choosing that. Capping frames as well makes the trade
+    // automatic -- a higher rate keeps fewer seconds, at constant memory.
+    const MAX_BUFFER_FRAMES = MAX_BUFFER_SECONDS * BUFFER_FPS;
+
+    // "> 1000/BUFFER_FPS" is "> 33.333..." at 30fps, and two rAF intervals on a
+    // 60Hz screen land at 33.33 -- not greater. Capture waited a third interval
+    // and ran at 20fps. A few ms of slack lands on the right interval at 60Hz
+    // and 120Hz alike without capturing early.
+    const BUFFER_GAP_MS = 1000 / BUFFER_FPS - 4;
     let lastBufferPushTime = 0;
     let bufferBusy = false;
 
@@ -592,8 +604,11 @@
     // Clip export records the canvas as it plays, so it holds the transport for
     // one pass. Tracked here so the transport can refuse input while it runs.
     let clipRecorder = null;
+    let clipStream = null;
     let clipChunks = [];
     let exportingClip = false;
+    let clipStartedAt = 0;
+    let clipDeadlineMs = 0;
 
     const guides = {
       planeLine: { enabled: true, start: { x: 0.35, y: 0.84 }, end: { x: 0.68, y: 0.22 } },
@@ -1246,11 +1261,11 @@
         logLine("warn", "Clip export unavailable: no supported container");
         return;
       }
-      let stream;
       try {
-        stream = canvas.captureStream(30);
-        clipRecorder = new MediaRecorder(stream, { mimeType: type });
+        clipStream = canvas.captureStream(30);
+        clipRecorder = new MediaRecorder(clipStream, { mimeType: type });
       } catch (err) {
+        releaseClipStream();
         showToast("Could not start recording", 4000);
         logLine("error", "Clip export failed to start: " + err);
         return;
@@ -1269,16 +1284,34 @@
           exportStatus.textContent = "Saved " + name;
           logLine("ok", "Clip saved", { name: name, kb: Math.round(blob.size / 1024), type: type });
         }
+        releaseClipStream();
         setClipExportUi(false);
       };
 
       exportingClip = true;
+      clipStartedAt = performance.now();
+      // One pass, plus slack for a slow encoder. Past this the watchdog above
+      // ends it rather than letting the recorder run on.
+      clipDeadlineMs = (frameBuffer.length / replayFps) * 1000 + 4000;
       setClipExportUi(true);
       replayIndex = 0;
       replaySpeed = 1;
       btnReplaySpeed.textContent = "1x";
       setReplayPlaying(true);
-      clipRecorder.start();
+      // start() throws on its own account, and by here the transport is already
+      // disabled -- letting it escape left a dead UI with nothing said.
+      try {
+        clipRecorder.start();
+      } catch (err) {
+        exportingClip = false;
+        clipRecorder = null;
+        releaseClipStream();
+        setReplayPlaying(false);
+        setClipExportUi(false);
+        showToast("Could not start recording", 4000);
+        logLine("error", "Clip export failed at start(): " + err);
+        return;
+      }
       logLine("info", "Clip export started", {
         type: type,
         seconds: +(frameBuffer.length / replayFps).toFixed(1),
@@ -1286,12 +1319,23 @@
       });
     }
 
+    function releaseClipStream() {
+      if (!clipStream) return;
+      // A canvas capture keeps running at 30fps until its tracks are stopped,
+      // so leaving it attached costs for the life of the page.
+      try { clipStream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+      clipStream = null;
+    }
+
     function stopClipExport() {
       exportingClip = false;
       setReplayPlaying(false);
       if (clipRecorder && clipRecorder.state !== "inactive") {
-        try { clipRecorder.stop(); } catch (e) { setClipExportUi(false); }
+        // onstop does the release and the UI; only the failure path needs both
+        // done here.
+        try { clipRecorder.stop(); } catch (e) { releaseClipStream(); setClipExportUi(false); }
       } else {
+        releaseClipStream();
         setClipExportUi(false);
       }
       clipRecorder = null;
@@ -1980,16 +2024,37 @@
 
       const liveReady = !isSimulatedFeed && videoStream && video.videoWidth > 0 && video.readyState >= 2;
 
+      // advanceReplay() is what notices the loop wrapping and ends a recording,
+      // and it only runs while the buffer has frames. Empty it mid-record --
+      // flipping the camera does exactly that -- and the recording never ends.
+      // This check sits outside that gate deliberately.
+      if (exportingClip && (!frameBuffer.length || now - clipStartedAt > clipDeadlineMs)) {
+        logLine("warn", "Clip export ended by watchdog", {
+          frames: frameBuffer.length,
+          elapsedMs: Math.round(now - clipStartedAt)
+        });
+        stopClipExport();
+      }
+
       // Always recording, so Replay has something to show whichever mode the
       // golfer was in when they swung. Frozen in replay: the clip being watched
       // must not change underneath the playhead.
       if (liveReady && appMode !== "replay" && !bufferBusy &&
-          now - lastBufferPushTime > 1000 / BUFFER_FPS &&
+          now - lastBufferPushTime > BUFFER_GAP_MS &&
           typeof createImageBitmap !== "undefined") {
         lastBufferPushTime = now;
         bufferBusy = true;
         createImageBitmap(video)
-          .then(bitmap => { frameBuffer.push({ timestamp: performance.now(), bitmap }); })
+          .then(bitmap => {
+            // This resolves a frame or two late. If replay began in between,
+            // the buffer is frozen and already measured -- appending here would
+            // end the clip on a frame the golfer never saw.
+            if (appMode === "replay") {
+              if (bitmap && bitmap.close) { try { bitmap.close(); } catch (e) {} }
+              return;
+            }
+            frameBuffer.push({ timestamp: performance.now(), bitmap });
+          })
           .catch(() => {})
           .finally(() => { bufferBusy = false; });
       }
@@ -1998,7 +2063,9 @@
       // dropping the head would slide the clip out from under the playhead.
       if (appMode !== "replay") {
         const maxKeep = MAX_BUFFER_SECONDS * 1000;
-        while (frameBuffer.length && now - frameBuffer[0].timestamp > maxKeep) {
+        while (frameBuffer.length &&
+               (now - frameBuffer[0].timestamp > maxKeep ||
+                frameBuffer.length > MAX_BUFFER_FRAMES)) {
           const old = frameBuffer.shift();
           if (old.bitmap && old.bitmap.close) { try { old.bitmap.close(); } catch (e) {} }
         }
@@ -2480,7 +2547,10 @@
     ["pointerup", "pointercancel", "change"].forEach((ev) =>
       replayScrub.addEventListener(ev, () => { replayScrubbing = false; }));
     replayScrub.addEventListener("input", (e) => {
-      setReplayPlaying(false);
+      // setReplayPlaying rewrites innerHTML and runs a document-wide
+      // lucide.createIcons(); "input" fires on every tick of the drag, so
+      // calling it unconditionally janked the very gesture it serves.
+      if (replayPlaying) setReplayPlaying(false);
       replayIndex = parseInt(e.target.value, 10) || 0;
       syncReplayUi();
     });
@@ -2581,7 +2651,12 @@
       // Dropping the buffer on the way out is how the camera gets released
       // cleanly, but doing it during replay throws away the clip the golfer
       // paused on and came back to.
-      if (document.hidden) { if (appMode !== "replay") clearFrameBuffer(); }
+      if (document.hidden) {
+        // rAF stops when hidden, so the watchdog stops with it and the recorder
+        // would encode one frozen frame for as long as the page stayed away.
+        if (exportingClip) stopClipExport();
+        if (appMode !== "replay") clearFrameBuffer();
+      }
       else if (!isSimulatedFeed && video.paused) { video.play().catch(() => {}); }
     });
 
