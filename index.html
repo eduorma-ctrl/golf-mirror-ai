@@ -746,38 +746,61 @@
       }
     }
 
-    // Minimal text-only call. Isolates whether the KEY itself is accepted: no
-    // image, no thinking config, and no golf stance needed to run it.
+    // Text-only latency benchmark. Two jobs: prove the key is accepted at all, and
+    // show WHERE the time goes. A bare call uses the model's default thinking level,
+    // which on Gemini 3.x is generous -- so comparing it against explicit minimal and
+    // low levels says whether latency is thinking time or network/queue time. No
+    // image and no golf stance needed, so it is runnable from the couch.
     async function testApiKey() {
       if (!userApiKey) {
         logLine("warn", "API test skipped: no key saved in Settings");
         renderLog();
         return;
       }
-      logLine("info", "API test -> " + geminiModel + " from origin " + location.origin);
       const url = "https://generativelanguage.googleapis.com/v1beta/models/" + geminiModel + ":generateContent";
-      const t0 = performance.now();
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": userApiKey },
-          body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Reply with the single word: ok" }] }] })
-        });
-        const ms = Math.round(performance.now() - t0);
-        const body = await res.text();
-        if (res.ok) {
-          logLine("ok", "API test PASSED " + res.status + " in " + ms + "ms - key works from this origin");
-        } else {
-          let detail = body;
-          try {
-            const j = JSON.parse(body);
-            detail = (j && j.error && (j.error.message || j.error.status)) || body;
-          } catch (e) {}
-          logLine("error", "API test FAILED " + res.status + " in " + ms + "ms", String(detail).slice(0, 300));
+      const variants = [
+        { label: "default thinking", cfg: null },
+        { label: "thinkingLevel minimal", cfg: { thinkingLevel: "minimal" } },
+        { label: "thinkingLevel low", cfg: { thinkingLevel: "low" } }
+      ];
+
+      logLine("info", "Latency benchmark -> " + geminiModel + " from " + location.origin);
+      btnTestApi.disabled = true;
+      const prevLabel = btnTestApi.textContent;
+      btnTestApi.textContent = "Testing...";
+
+      for (const v of variants) {
+        const payload = { contents: [{ role: "user", parts: [{ text: "Reply with the single word: ok" }] }] };
+        if (v.cfg) payload.generationConfig = { thinkingConfig: v.cfg };
+        const t0 = performance.now();
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": userApiKey },
+            body: JSON.stringify(payload)
+          });
+          const ms = Math.round(performance.now() - t0);
+          const body = await res.text();
+          if (res.ok) {
+            logLine("ok", v.label + ": " + res.status + " in " + ms + "ms");
+          } else {
+            let detail = body;
+            try {
+              const j = JSON.parse(body);
+              detail = (j && j.error && (j.error.message || j.error.status)) || body;
+            } catch (e) {}
+            // An unsupported thinking level 400s here; that is a result, not a crash.
+            logLine("error", v.label + ": " + res.status + " in " + ms + "ms", String(detail).slice(0, 200));
+          }
+        } catch (e) {
+          logLine("error", v.label + " threw", (e && e.name) + ": " + (e && e.message));
         }
-      } catch (e) {
-        logLine("error", "API test threw", (e && e.name) + ": " + (e && e.message));
+        renderLog();
       }
+
+      btnTestApi.disabled = false;
+      btnTestApi.textContent = prevLabel;
+      logLine("info", "Benchmark done. If minimal/low are much faster than default, the wait is thinking time, not the network.");
       renderLog();
     }
 
