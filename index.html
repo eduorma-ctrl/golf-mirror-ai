@@ -501,7 +501,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-focus";
+    const BUILD = "2026-09-05-videospace";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -546,6 +546,26 @@
 
     // Canvas geometry: the rect the video is actually drawn into (CSS px, unmirrored)
     let videoRect = { x: 0, y: 0, w: 0, h: 0 };
+
+    // Guides are stored in VIDEO-FRAME coordinates: 0-1 across the picture itself,
+    // not across the canvas. The canvas resizes constantly -- chrome hiding, the
+    // mobile URL bar collapsing, rotation -- and the video is re-fitted inside it
+    // each time. Storing canvas coordinates meant every guide slid off the golfer
+    // whenever that happened, which is fatal for a tush line whose entire value is
+    // sitting exactly where the glutes are. These convert at draw and hit-test time.
+    // The fallbacks matter before the first frame, when videoRect is still zero.
+    function vidToPxX(vx) {
+      return videoRect.w > 0 ? videoRect.x + vx * videoRect.w : vx * (canvas.clientWidth || 1);
+    }
+    function vidToPxY(vy) {
+      return videoRect.h > 0 ? videoRect.y + vy * videoRect.h : vy * (canvas.clientHeight || 1);
+    }
+    function pxToVidX(px) {
+      return videoRect.w > 0 ? (px - videoRect.x) / videoRect.w : px / (canvas.clientWidth || 1);
+    }
+    function pxToVidY(py) {
+      return videoRect.h > 0 ? (py - videoRect.y) / videoRect.h : py / (canvas.clientHeight || 1);
+    }
 
     // ---------- Audio ----------
     let audioCtx = null;
@@ -679,22 +699,20 @@
     const btnFocus = $("btn-focus");
     const btnExitFocus = $("btn-exit-focus");
 
-    // Practice view: strip the interface back to just the guide lines.
+    // Practice view: strip the interface back to just the guide lines, full bleed.
     //
-    // The header and footer are FADED rather than removed. They occupy layout, so
-    // removing them would let the canvas grow, re-fit the video, and shift every
-    // guide about 9px off the body -- the guides are stored in canvas-normalized
-    // coordinates. Absolutely positioned overlays take no layout space, so those
-    // can be hidden outright.
+    // Removing the header and footer grows the canvas and re-fits the video inside
+    // it. That is safe now only because guides live in video-frame coordinates and
+    // are converted at draw time -- they stay welded to the golfer through the
+    // resize. Before that change this had to fade the chrome in place instead, or
+    // every line slid about 9px off the body on the way in.
     let focusMode = false;
 
     function setFocusMode(on) {
       focusMode = !!on;
 
       [appHeader, appFooter].forEach((el) => {
-        if (!el) return;
-        el.classList.toggle("opacity-0", focusMode);
-        el.classList.toggle("pointer-events-none", focusMode);
+        if (el) el.classList.toggle("hidden", focusMode);
       });
 
       [guideToggles, tushAdjustWidget, planeStatusBadge, diagnosticsPill].forEach((el) => {
@@ -1451,18 +1469,15 @@
         tuVx = isLefty ? 0.38 : 0.62;
       }
 
-      const vr = capturedVideoRect;
-      const cw = canvas.clientWidth || 1;
-      const ch = canvas.clientHeight || 1;
-      const toCx = (n) => (vr.w > 0 ? (vr.x + n * vr.w) / cw : n);
-      const toCy = (n) => (vr.h > 0 ? (vr.y + n * vr.h) / ch : n);
-
-      const chX = toCx(chVx), chY = toCy(chVy);
-      const ghX = toCx(ghVx), ghY = toCy(ghVy);
-      const headX = toCx(hdVx), headY = toCy(hdVy);
+      // Gemini answered in the frame we sent it, and guides are stored in that same
+      // video-frame space, so these go straight in with no conversion at all. This
+      // used to map into canvas space, which is what made the guides resize-fragile.
+      const chX = chVx, chY = chVy;
+      const ghX = ghVx, ghY = ghVy;
+      const headX = hdVx, headY = hdVy;
       // Keep the line already on screen (preset or hand-nudged) when the model declined.
       const tushKept = tuVx === null;
-      const tushX = tushKept ? guides.hipLine.x : toCx(tuVx);
+      const tushX = tushKept ? guides.hipLine.x : tuVx;
 
       // Extend clubhead->hands into the full shaft plane line. Shrink the extension
       // until both ends are on screen rather than clamping x and y independently:
@@ -1483,7 +1498,7 @@
       guides.corridor.enabled = true;
       guides.headBox.x = headX; guides.headBox.y = headY; guides.headBox.enabled = true;
       guides.hipLine.x = tushX;
-      guides.hipLine.y = (tuVy === null) ? 0.52 : Math.max(0.2, Math.min(0.8, toCy(tuVy)));
+      guides.hipLine.y = (tuVy === null) ? 0.52 : Math.max(0.2, Math.min(0.8, tuVy));
       guides.hipLine.enabled = true;
 
       tushValDisplay.textContent = Math.round(tushX * 100) + "%";
@@ -1514,8 +1529,8 @@
     function screenAngleDeg(p1, p2) {
       const w = canvas.clientWidth || 1;
       const h = canvas.clientHeight || 1;
-      const dx = Math.abs((p2.x - p1.x) * w);
-      const dy = Math.abs((p2.y - p1.y) * h);
+      const dx = Math.abs(vidToPxX(p2.x) - vidToPxX(p1.x));
+      const dy = Math.abs(vidToPxY(p2.y) - vidToPxY(p1.y));
       return Math.round(Math.atan2(dy, dx) * (180 / Math.PI) * 10) / 10;
     }
 
@@ -1694,14 +1709,15 @@
       const handleR = 8 * fontScale;
 
       if (guides.planeLine.enabled) {
-        const p1 = { x: guides.planeLine.start.x * w, y: guides.planeLine.start.y * h };
-        const p2 = { x: guides.planeLine.end.x * w,   y: guides.planeLine.end.y * h };
+        const p1 = { x: vidToPxX(guides.planeLine.start.x), y: vidToPxY(guides.planeLine.start.y) };
+        const p2 = { x: vidToPxX(guides.planeLine.end.x),   y: vidToPxY(guides.planeLine.end.y) };
 
         if (guides.corridor.enabled) {
           ctx.save();
           const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
           const perp = angle - Math.PI / 2;
-          const off = guides.corridor.offsetPx * (w / 800);
+          // Scale with the picture, not the canvas: it is a body-relative corridor.
+          const off = guides.corridor.offsetPx * ((videoRect.w || w) / 800);
           const c1 = { x: p1.x + Math.cos(perp) * off, y: p1.y + Math.sin(perp) * off };
           const c2 = { x: p2.x + Math.cos(perp) * off, y: p2.y + Math.sin(perp) * off };
 
@@ -1745,9 +1761,9 @@
 
       if (guides.headBox.enabled) {
         ctx.save();
-        const cx = guides.headBox.x * w;
-        const cy = guides.headBox.y * h;
-        const r = guides.headBox.radius * Math.min(w, h) * 1.4;
+        const cx = vidToPxX(guides.headBox.x);
+        const cy = vidToPxY(guides.headBox.y);
+        const r = guides.headBox.radius * Math.min(videoRect.w || w, videoRect.h || h) * 1.4;
 
         ctx.strokeStyle = "#38bdf8";
         ctx.lineWidth = 2.5;
@@ -1777,8 +1793,11 @@
 
       if (guides.hipLine.enabled) {
         ctx.save();
-        const hx = guides.hipLine.x * w;
-        const depth = w * 0.06;
+        const hx = vidToPxX(guides.hipLine.x);
+        const depth = (videoRect.w || w) * 0.06;
+        // The wall spans the picture, so it stays on the golfer as the canvas resizes.
+        const wallTop = vidToPxY(0.15);
+        const wallBottom = vidToPxY(0.92);
         const wallRight = guides.hipLine.x > 0.5;
         const g0 = wallRight ? hx : hx - depth;
         const g1 = wallRight ? hx + depth : hx;
@@ -1791,19 +1810,19 @@
           grad.addColorStop(1, "rgba(168, 85, 247, 0.25)");
         }
         ctx.fillStyle = grad;
-        ctx.fillRect(wallRight ? hx : hx - depth, h * 0.15, depth, h * 0.77);
+        ctx.fillRect(wallRight ? hx : hx - depth, wallTop, depth, wallBottom - wallTop);
 
         ctx.strokeStyle = "#a855f7";
         ctx.lineWidth = 3;
         ctx.setLineDash([8, 4]);
-        ctx.beginPath(); ctx.moveTo(hx, h * 0.15); ctx.lineTo(hx, h * 0.92); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(hx, wallTop); ctx.lineTo(hx, wallBottom); ctx.stroke();
 
         ctx.setLineDash([]);
         ctx.fillStyle = "#a855f7";
-        ctx.fillRect(hx - 15, h * 0.90, 30, 4);
+        ctx.fillRect(hx - 15, vidToPxY(0.90), 30, 4);
 
         ctx.beginPath();
-        ctx.arc(hx, guides.hipLine.y * h, handleR, 0, Math.PI * 2);
+        ctx.arc(hx, vidToPxY(guides.hipLine.y), handleR, 0, Math.PI * 2);
         ctx.fillStyle = "#ffffff";
         ctx.strokeStyle = "#a855f7";
         ctx.lineWidth = 3.5;
@@ -1814,7 +1833,7 @@
         const label = "Tush line";
         const lw = ctx.measureText(label).width;
         const lx = wallRight ? Math.max(4, hx - lw - 16) : Math.min(w - lw - 4, hx + 16);
-        ctx.fillText(label, lx, guides.hipLine.y * h - 14);
+        ctx.fillText(label, lx, vidToPxY(guides.hipLine.y) - 14);
         ctx.restore();
       }
     }
@@ -1825,9 +1844,12 @@
       const t = event.touches && event.touches[0];
       const clientX = t ? t.clientX : event.clientX;
       const clientY = t ? t.clientY : event.clientY;
-      let x = (clientX - rect.left) / rect.width;
-      const y = (clientY - rect.top) / rect.height;
-      if (isMirrored) x = 1 - x; // guides are drawn unmirrored, so invert input
+      let pxX = clientX - rect.left;
+      const pxY = clientY - rect.top;
+      if (isMirrored) pxX = rect.width - pxX; // unchanged behaviour, see HANDOFF open items
+      // Into video-frame space, the space the guides are stored in.
+      const x = pxToVidX(pxX);
+      const y = pxToVidY(pxY);
       return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
     }
 
@@ -1838,7 +1860,7 @@
       const h = canvas.clientHeight || 1;
       const hitPx = 30; // generous finger target
 
-      const distPx = (ax, ay) => Math.hypot((pos.x - ax) * w, (pos.y - ay) * h);
+      const distPx = (ax, ay) => Math.hypot(vidToPxX(pos.x) - vidToPxX(ax), vidToPxY(pos.y) - vidToPxY(ay));
 
       if (guides.headBox.enabled && distPx(guides.headBox.x, guides.headBox.y) < hitPx) {
         activeDragHandle = "headBox"; return;
@@ -1847,7 +1869,7 @@
         if (distPx(guides.planeLine.start.x, guides.planeLine.start.y) < hitPx) { activeDragHandle = "planeStart"; return; }
         if (distPx(guides.planeLine.end.x, guides.planeLine.end.y) < hitPx) { activeDragHandle = "planeEnd"; return; }
       }
-      if (guides.hipLine.enabled && Math.abs((pos.x - guides.hipLine.x) * w) < hitPx) {
+      if (guides.hipLine.enabled && Math.abs(vidToPxX(pos.x) - vidToPxX(guides.hipLine.x)) < hitPx) {
         activeDragHandle = "hipLine"; return;
       }
     }
