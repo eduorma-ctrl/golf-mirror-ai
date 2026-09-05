@@ -161,6 +161,11 @@ for guides to appear, not holding the stance.
 6. **Boot log reports `canvas 300x150`** because it logs before layout settles.
    Cosmetic; the `Scan start` line has the real numbers.
 7. **A/B the models** on the range — 3.7 Flash vs 3 Pro Preview.
+8. **Face-On is a thin mode.** It presets a vertical plane line and passes its label
+   into the prompt, and that is all. The geometric fallback branches only on
+   `isLefty`, so Face-On silently receives the Righty DTL coordinates, and the tush
+   line and Hogan corridor are down-the-line concepts with no face-on meaning. Either
+   make it a real mode or remove it.
 
 ---
 
@@ -197,3 +202,35 @@ is small enough that the crop cannot reach the clubhead, and the snapshot path h
 to change with it: `videoRect` would extend beyond the canvas, so the frame sent to
 Gemini must be the visible intersection, and the returned coordinates mapped back
 through that crop into source-video space.
+
+---
+
+## Working in the cloud, with the laptop off
+
+Nothing about this project lives on a local machine, by design. The repo is the
+source of truth, Cloudflare Pages builds from it, and the app runs on the phone.
+There is no working copy to lose and nothing to hand-transfer.
+
+**Remote Control is not the same thing as a cloud session.** If the mobile app shows
+the session as connected to a laptop, that is Remote Control: the session runs on the
+laptop and the phone is only a viewer. Close the laptop and the session dies. Cloud
+sessions instead run in an Anthropic-managed VM that clones the repo from GitHub, and
+they survive the browser closing.
+
+To start one: connect GitHub to the Claude account (authorize the Claude GitHub App at
+claude.ai/code, or run `/web-setup` to sync a `gh` token), then start the task from
+claude.ai/code rather than from a terminal. Session handoff is one-way from the CLI —
+`--teleport` pulls cloud to local, but a terminal session cannot be pushed to the web.
+The desktop app's **Continue in** menu is the exception.
+
+Two things from the old setup do not carry over, and neither matters:
+
+- **Composio MCP** was the only GitHub path from the desktop session, which is why
+  history shows file writes through the GitHub contents API instead of commits. A
+  cloud session clones the repo and uses real `git`, which is strictly better.
+- **Cloudflare access** is not needed for deploys. Pages watches `main` and builds on
+  push regardless of who pushed.
+
+Cloud sessions have limited network egress by default. Gemini is called from the
+golfer's phone, not from the session, so that does not affect debugging — the log is
+still copied out of the app and pasted into the conversation.
