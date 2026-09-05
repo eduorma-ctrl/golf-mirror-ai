@@ -1059,15 +1059,16 @@
         const sx = videoRect.x * scaleX, sy = videoRect.y * scaleY;
         const sw = Math.max(1, videoRect.w * scaleX), sh = Math.max(1, videoRect.h * scaleY);
         const out = document.createElement("canvas");
-        out.width = Math.round(Math.min(1280, sw));
+        out.width = Math.round(Math.min(1024, sw));
         out.height = Math.max(1, Math.round(out.width * (sh / sw)));
         out.getContext("2d").drawImage(canvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
-        // A thin dark shaft against a dark mat is exactly what aggressive JPEG
-        // compression erases, so keep the quality high here.
+        // A thin dark shaft against a dark mat is what aggressive JPEG compression
+        // erases, so quality stays highish -- but 1280/0.92 pushed the payload to
+        // ~117KB and the request timed out, so this is the balance point.
         logLine("info", "Snapshot", { out: out.width + "x" + out.height, srcRect: [Math.round(sx), Math.round(sy), Math.round(sw), Math.round(sh)], scale: [+scaleX.toFixed(2), +scaleY.toFixed(2)] });
-        return out.toDataURL("image/jpeg", 0.92);
+        return out.toDataURL("image/jpeg", 0.88);
       } catch (e) {
-        return canvas.toDataURL("image/jpeg", 0.92);
+        return canvas.toDataURL("image/jpeg", 0.88);
       }
     }
 
@@ -1105,8 +1106,12 @@
         'Return only JSON: {"detected":true,"clubHead":{"x":350,"y":840},"gripHands":{"x":480,"y":580},' +
         '"headCenter":{"x":500,"y":280},"tushLineX":620,"shaftAngleDegrees":49.2,"confidence":98}';
 
-      // Low thinking: coordinate localization is a perception task, and the
-      // golfer is holding a stance while this runs. Speed matters here.
+      // Low thinking: coordinate localization is a perception task, so the extra
+      // deliberation buys little here. The snapshot is already captured by this
+      // point, so the golfer is NOT holding the stance while this runs -- they are
+      // only waiting for guides to appear, which is why the budget can be generous.
+      // Measured: a trivial text-only call on this account takes ~9s, so 20s was
+      // never enough for an image request and every scan aborted.
       logLine("info", "Scan start", {
         profile: profile.id,
         mirrored: capturedMirrored,
@@ -1116,7 +1121,7 @@
         dpr: window.devicePixelRatio || 1
       });
 
-      const ai = await callGemini(prompt, base64Data, 20000, "low");
+      const ai = await callGemini(prompt, base64Data, 40000, "low");
 
       scanOverlay.classList.add("hidden");
 
@@ -1618,7 +1623,7 @@
 
       // Medium thinking: this is the quality-critical call, and the golfer is
       // reading a modal rather than holding a pose. Latency is affordable.
-      let parsed = await callGemini(prompt, base64Data, 30000, "medium");
+      let parsed = await callGemini(prompt, base64Data, 60000, "medium");
 
       if (!parsed) {
         parsed = {
