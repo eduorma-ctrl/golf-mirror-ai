@@ -173,3 +173,27 @@ for guides to appear, not holding the stance.
 - Verify before claiming. Deploys are checked by checksum against the built file,
   JavaScript is syntax-checked before pushing, and coordinate maths is replayed
   against real logged values.
+
+---
+
+## Why the video is letterboxed, and why not to "fix" it
+
+The camera is 9:16 (aspect 0.563). The normal view's canvas is 0.646 — wider — so
+the picture is pillarboxed with ~27px side bars. The obvious fix is to switch
+`drawContain()` to a cover fit so it fills edge to edge. **Do not.**
+
+Cover crops 13% of the camera height in the normal view, 6.5% off top and bottom.
+Measured clubhead positions from real scans sit at y=0.94–0.985 of the frame, so
+that crop removes the clubhead from the picture entirely and shaft detection stops
+working. The bars are the cheaper problem.
+
+The practice view already solves it without any cropping: hiding the chrome makes
+the canvas 411x743, aspect 0.553, which nearly matches the camera. The picture
+fills the width with 0px side bars and ~6px top and bottom. That was the chosen
+answer, and it needs no code.
+
+If a future setup genuinely needs cover, it is only safe when the aspect mismatch
+is small enough that the crop cannot reach the clubhead, and the snapshot path has
+to change with it: `videoRect` would extend beyond the canvas, so the frame sent to
+Gemini must be the visible intersection, and the returned coordinates mapped back
+through that crop into source-video space.
