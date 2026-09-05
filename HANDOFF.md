@@ -7,7 +7,8 @@ to `main`, usually live within ~60s.
 Swing mirror for solo range practice, down-the-line or face-on: draggable
 shaft-plane, Hogan corridor, head-stability ring and tush/sway line over a live
 camera feed, with a hands-free countdown, delayed replay, a scrubbable replay
-that can be saved as a still or a clip, and Gemini vision for stance detection.
+that catches the swing automatically and can be saved as a still or a clip, and
+Gemini vision for stance detection.
 
 ---
 
@@ -86,10 +87,16 @@ playhead at it rather than a capture pipeline.
 | Reader | How it reads |
 | --- | --- |
 | Live | not at all; draws the video element |
-| Delay | the frame nearest `now - delaySeconds` |
-| Replay | `frameBuffer[replayIndex]`, playhead driven by the transport |
+| Delay | the frame nearest `now - delaySeconds`, from **either** array below |
+| Replay | `replaySourceFrames()[replayIndex]`, playhead driven by the transport |
 
-Three things about it are load-bearing:
+There is a second array, `swingClip`: the held swing. Auto-capture (`detectSwing`)
+watches a 10Hz 64×64 frame difference for a burst followed by stillness and, on
+that pattern, **moves** the last `SWING_CLIP_SECONDS` out of `frameBuffer` into
+it. Replay prefers it when it exists, because it is centred on what the golfer
+came to look at where the live buffer merely ends at whenever they arrived.
+
+Four things are load-bearing:
 
 - **It fills in every mode except replay.** It used to fill only in delay, and be
   released on the way out, so a swing hit in Live was gone before you could ask
@@ -98,15 +105,34 @@ Three things about it are load-bearing:
   `createImageBitmap`, not the backgrounding handler. The clip is measured on
   entry (`measureBufferFps`) and the playhead indexes into it; change the array
   underneath and the clip erodes while it plays, which reads as a rendering bug.
-- **Memory is capped by frames as well as by age.** Pruning by age alone let the
-  frame rate set the memory bill. With both caps the rate/duration trade is
-  automatic: ask for more fps and you keep fewer seconds, at constant memory.
+- **Memory is capped by frames as well as by age, and the held clip counts.**
+  Pruning by age alone let the frame rate set the memory bill. With both caps
+  the rate/duration trade is automatic: ask for more fps and you keep fewer
+  seconds, at constant memory. `frameBuffer.length + swingClip.length` is what
+  the cap tests — counting only the live buffer quietly added 40% on top.
+- **The held clip is moved, never copied, and never replaced unviewed.** Two
+  arrays sharing `ImageBitmap`s would need refcounting to know when `close()` is
+  safe, and closing one the other still draws is a crash. Moving means the
+  frames still exist, so delay mode looks them up across both arrays rather
+  than falling into the hole the move leaves. And a clip the golfer has not yet
+  opened in Replay is the swing they came for: the walk to the phone has the
+  same "burst then stillness" shape and would otherwise replace it.
+
+The camera negotiates at 30fps and will not do 60 — asked for 60 with `ideal`,
+it granted 30, and `actualFps` in the Replay log confirms the pipeline keeps
+up with it. The frame cap means 60 would halve the clip rather than double
+the memory, but the question is moot on this hardware.
 
 Export reads the main canvas, which already has the frame and the guides
 composited on it — a still via `toBlob`, a clip via `captureStream` +
 `MediaRecorder` recording one pass in real time. Real time is the price of
 reusing the on-screen render, and it buys a file that cannot disagree with what
-the golfer was looking at.
+the golfer was looking at. Both come out in **true orientation**: a mirror is
+right to practise against and wrong to keep. For the length of an export
+`unmirrorForExport` drops the mirror from the video draw and flips guide x in
+`vidToPxX`, the single point every guide and hit test goes through, so the
+guides move with the golfer. Scan, drag, the mirror toggle and re-entering
+Replay are all refused while it runs.
 
 ---
 
@@ -171,6 +197,28 @@ the golfer was looking at.
    `tushDetected: false`, in which case the existing line is kept rather than moved
    to a guess.
 
+11. **A mirror flips chirality, not just positions.** Under `exportFlipX()` the
+   guide endpoints are already mirrored by `vidToPxX`; anything that then picks
+   a side with a fixed sign draws on the wrong side of the golfer. The corridor's
+   perpendicular flips its sign with the export, and the tush wall's side reads
+   the *drawn* x, not the stored one. Any new side-dependent guide must do the
+   same.
+
+12. **Auto-capture must lose to an unviewed clip, and give up on long bursts.**
+   The trigger — motion, then stillness — is also exactly what walking to the
+   phone and stopping looks like. `captureSwing` refuses while `swingClip` holds
+   frames the golfer has not opened, and `detectSwing` abandons any burst past
+   `SWING_MAX_MS`: a swing is over in ~1.5s, a walk takes 3–8s, and duration
+   separates them more cleanly than any motion threshold. Opening the clip in
+   Replay is what frees the slot.
+
+13. **Read layout before writing DOM in the replay loop.** `syncReplayUi` writes
+   the transport and `drawMotionTrace` draws the trace on the same frame; a
+   `clientWidth` read between them forces a synchronous layout 60×/s for the
+   whole replay and the whole real-time export. The trace's backing size is set
+   on entry and on a real canvas resize, and the transport is written only when
+   the frame index moves.
+
 ---
 
 ## Fixed, do not reintroduce
@@ -206,6 +254,14 @@ the golfer was looking at.
 | `MediaRecorder.start()` outside the try/catch guarding the constructor | inside it, unwinds the disabled transport |
 | `captureStream` tracks never stopped, leaving a live 30fps capture per export | `releaseClipStream()` |
 | Scrub `input` paused playback every pointer tick, running a document-wide `lucide.createIcons()` | pauses once, on the tick that pauses |
+| Saved clips and stills came out mirrored | `unmirrorForExport`, read by the video draw and `vidToPxX` only |
+| Auto-capture replaced the real swing with the walk to the phone | never replace an unviewed clip; abandon bursts past `SWING_MAX_MS` |
+| Capture spliced the swing out from under delay mode | delay looks up its frame across both arrays |
+| Corridor and tush wall on the wrong side of the golfer in the un-mirrored export | perpendicular sign and wall side follow the flip |
+| Replay tap and mirror toggle live during an export | both refused, alongside scan and drag |
+| Forced synchronous layout every replay frame | trace sized on entry/resize; DOM written only on index change |
+| Held clip not counted against `MAX_BUFFER_FRAMES` | `frameBuffer.length + swingClip.length` |
+| Two copies of the 64×64 frame-difference loop | one `frameDiff`; one `closeFrames` for both bitmap arrays |
 | Shaft angle computed in normalized units | `screenAngleDeg()` uses real screen pixels |
 
 ---
@@ -227,16 +283,18 @@ the golfer was looking at.
 6. **Boot log reports `canvas 300x150`** because it logs before layout settles.
    Cosmetic; the `Scan start` line has the real numbers.
 7. **A/B the models** on the range — 3.7 Flash vs 3 Pro Preview.
-8. **Should the buffer run at 60fps?** Unanswered until someone reads `actualFps`
-   against `targetFps` in a `Replay` log line, and `cameraFps` on `Camera
-   connected`. Short of target means the bottleneck is `createImageBitmap`, not
-   the camera, and 60 would buy nothing while costing memory for frames that
-   never arrive. The frame cap means 60 would halve the clip to 5s rather than
-   double the memory, which is the right trade but should be a choice.
-9. **Clip export is untested off Android Chrome.** iOS Safari is the expected
-   casualty: the code reports missing `MediaRecorder`, missing `captureStream` or
-   an unsupported container rather than failing quietly, and Save frame works
-   regardless, but nobody has watched it happen.
+8. **The swing thresholds are untuned.** `SWING_ON`, `SWING_OFF`, `SWING_MIN_MS`,
+   `SWING_MAX_MS` and `SWING_QUIET_MS` are guesses that have not yet met a real
+   swing. Every capture logs `peak` and `activeMs`, and every rejection logs why
+   — too brief, too long, or a clip already held. Tune from those lines, not
+   from taste. Related design choice, not a bug: two swings without opening
+   Replay in between drops the second. If that turns out wrong on the range,
+   the alternative is keeping the newest N clips.
+9. **Clip export is confirmed on Android Chrome only** (VP9 webm, 10s in 10.05s,
+   1.9MB). iOS Safari is the expected casualty: the code reports missing
+   `MediaRecorder`, missing `captureStream` or an unsupported container rather
+   than failing quietly, and Save frame works regardless, but nobody has watched
+   it happen.
 10. **The no-key fallback assumes an unmirrored right-hander in face-on.** It
    hardcodes the trail hip to camera-left. With mirror on it is on the wrong
    side. Only affects no-key mode — a scan reads the hip off the body and is
