@@ -460,6 +460,15 @@
         </button>
       </div>
 
+      <div id="last-frame-wrap" class="hidden shrink-0 border-b border-slate-800 bg-slate-950 p-3">
+        <div class="text-[11px] font-bold text-slate-300 mb-2">Frame sent to Gemini, with the coordinates it returned drawn on it</div>
+        <canvas id="last-frame-canvas" class="block mx-auto max-w-full rounded-lg border border-slate-800"></canvas>
+        <p class="text-[10px] text-slate-500 mt-2 leading-relaxed">
+          Markers in the right place here mean detection is fine and any error is in the mapping.
+          Markers in the wrong place mean the model genuinely misread the frame.
+        </p>
+      </div>
+
       <div id="log-body" class="flex-1 overflow-y-auto p-3 bg-slate-950 font-mono text-[10px] leading-relaxed text-slate-300 whitespace-pre-wrap break-words"></div>
 
       <div class="p-3 border-t border-slate-800 bg-slate-950 flex items-center justify-between gap-2 shrink-0">
@@ -480,6 +489,9 @@
 
   <script>
     "use strict";
+
+    // Bump on every deploy. Without this a log cannot prove which build produced it.
+    const BUILD = "2026-09-05-frameview";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -656,6 +668,78 @@
     const btnCopyLog = $("btn-copy-log");
     const btnClearLog = $("btn-clear-log");
     const btnTestApi = $("btn-test-api");
+    const lastFrameWrap = $("last-frame-wrap");
+    const lastFrameCanvas = $("last-frame-canvas");
+
+    // The exact JPEG handed to Gemini, kept so it can be inspected after the fact.
+    // Debugging a vision problem without seeing the image is guesswork.
+    let lastScan = null;
+
+    function renderLastFrame() {
+      if (!lastFrameWrap || !lastFrameCanvas) return;
+      if (!lastScan || !lastScan.dataUrl) { lastFrameWrap.classList.add("hidden"); return; }
+      lastFrameWrap.classList.remove("hidden");
+      const img = new Image();
+      img.onload = () => {
+        const maxW = Math.max(160, Math.min(520, (lastFrameWrap.clientWidth || 320) - 24));
+        const scale = maxW / img.width;
+        lastFrameCanvas.width = Math.round(img.width * scale);
+        lastFrameCanvas.height = Math.round(img.height * scale);
+        const c = lastFrameCanvas.getContext("2d");
+        c.drawImage(img, 0, 0, lastFrameCanvas.width, lastFrameCanvas.height);
+
+        const ai = lastScan.ai;
+        if (!ai) {
+          c.fillStyle = "rgba(2,6,23,0.75)";
+          c.fillRect(0, 0, lastFrameCanvas.width, 22);
+          c.fillStyle = "#f59e0b";
+          c.font = "bold 12px sans-serif";
+          c.fillText("no response for this frame", 8, 15);
+          return;
+        }
+        // Gemini's 0-1000 scale maps onto the image we sent, so draw it directly.
+        const px = (v) => (Number(v) / 1000) * lastFrameCanvas.width;
+        const py = (v) => (Number(v) / 1000) * lastFrameCanvas.height;
+        const dot = (x, y, color, label) => {
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+          c.beginPath();
+          c.arc(x, y, 7, 0, Math.PI * 2);
+          c.fillStyle = color;
+          c.fill();
+          c.strokeStyle = "#020617";
+          c.lineWidth = 2;
+          c.stroke();
+          c.font = "bold 12px sans-serif";
+          c.strokeStyle = "#020617";
+          c.lineWidth = 3;
+          c.strokeText(label, x + 10, y - 8);
+          c.fillStyle = color;
+          c.fillText(label, x + 10, y - 8);
+        };
+        if (ai.clubHead) dot(px(ai.clubHead.x), py(ai.clubHead.y), "#10b981", "club");
+        if (ai.gripHands) dot(px(ai.gripHands.x), py(ai.gripHands.y), "#ffffff", "hands");
+        if (ai.headCenter) dot(px(ai.headCenter.x), py(ai.headCenter.y), "#38bdf8", "head");
+        if (ai.tushLineX !== undefined && ai.tushLineX !== null) {
+          const x = px(ai.tushLineX);
+          c.strokeStyle = "#a855f7";
+          c.lineWidth = 3;
+          c.setLineDash([8, 5]);
+          c.beginPath();
+          c.moveTo(x, 0);
+          c.lineTo(x, lastFrameCanvas.height);
+          c.stroke();
+          c.setLineDash([]);
+          c.font = "bold 12px sans-serif";
+          c.strokeStyle = "#020617";
+          c.lineWidth = 3;
+          const lbl = "tush " + ai.tushLineX + (ai.tushDetected === false ? " (declined)" : "");
+          c.strokeText(lbl, Math.min(x + 6, lastFrameCanvas.width - 90), 16);
+          c.fillStyle = "#c084fc";
+          c.fillText(lbl, Math.min(x + 6, lastFrameCanvas.width - 90), 16);
+        }
+      };
+      img.src = lastScan.dataUrl;
+    }
 
     // ---------- Diagnostics log ----------
     // On-device log, because problems show up at the range where there is no
@@ -710,6 +794,7 @@
     function logAsText() {
       const header = [
         "Golf Mirror AI diagnostics",
+        "build:  " + BUILD,
         "when:   " + new Date().toISOString(),
         "url:    " + location.href,
         "origin: " + location.origin,
@@ -1113,6 +1198,8 @@
       const capturedMirrored = isMirrored;
       const snapshotUrl = snapshotFrame();
       const base64Data = snapshotUrl.split(",")[1] || "";
+      // Stored before the request so a timeout still leaves the frame to inspect.
+      lastScan = { dataUrl: snapshotUrl, ai: null };
 
       const prompt = "You are a golf computer vision system analyzing an address posture frame (" + profile.label + ").\n" +
         "Return 2D point coordinates on Gemini's native 0-1000 scale (top-left origin, per your spatial " +
@@ -1214,7 +1301,10 @@
           ? null
           : clamp(norm(ai.tushLineX), 0.02, 0.98);
         confidence = Number(ai.confidence) || 95;
-        logLine("ok", "AI raw (0-1000)", { clubHead: ai.clubHead, gripHands: ai.gripHands, headCenter: ai.headCenter, tushLineX: ai.tushLineX, shaftAngleDegrees: ai.shaftAngleDegrees, confidence: ai.confidence });
+        // Dump the whole object. Logging a hand-picked subset is how tushDetected
+        // went unseen for a round: the field was in the prompt but not in the log.
+        lastScan.ai = ai;
+        logLine("ok", "AI raw (0-1000)", JSON.stringify(ai).slice(0, 600));
         logLine("info", "Mapped into video frame (0-1)", { club: [+chVx.toFixed(3), +chVy.toFixed(3)], hands: [+ghVx.toFixed(3), +ghVy.toFixed(3)], head: [+hdVx.toFixed(3), +hdVy.toFixed(3)], tushX: tuVx === null ? "not detected" : +tuVx.toFixed(3) });
       } else {
         // Documented no-key mode: geometric guides, same video-frame space.
@@ -1861,6 +1951,7 @@
 
     btnOpenLog.addEventListener("click", () => {
       renderLog();
+      renderLastFrame();
       logModal.classList.remove("hidden");
     });
     btnCloseLog.addEventListener("click", () => logModal.classList.add("hidden"));
@@ -1902,6 +1993,7 @@
       resizeCanvas();
       requestAnimationFrame(render);
       logLine("info", "Boot", {
+        build: BUILD,
         origin: location.origin,
         dpr: window.devicePixelRatio || 1,
         screen: screen.width + "x" + screen.height,
