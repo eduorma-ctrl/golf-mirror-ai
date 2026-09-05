@@ -491,7 +491,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-frameview";
+    const BUILD = "2026-09-05-cleanframe";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -1156,7 +1156,11 @@
     let lastGeminiError = "";
 
     // Snapshot only the video region, without guide overlays baked in
-    function snapshotFrame() {
+    // Resolved by render() at the one instant the canvas holds the frame WITHOUT
+    // the guide overlays painted over it.
+    let pendingSnapshot = null;
+
+    function captureVideoRegion() {
       try {
         // Derive the backing-store scale from the canvas itself. Do NOT read
         // devicePixelRatio here: resizeCanvas() caps it at 2, so on a DPR-3 phone
@@ -1180,6 +1184,25 @@
       }
     }
 
+    // Waits for the next render pass rather than grabbing the canvas immediately.
+    // Grabbing it directly captured the guides too -- the shaft line, the head ring
+    // and a vertical line captioned "Tush line" -- so the model was being shown the
+    // app's own previous answers and asked to find those same features. It read the
+    // overlay back to us with high confidence instead of reading the golfer.
+    function snapshotFrame() {
+      return new Promise((resolve) => {
+        pendingSnapshot = resolve;
+        // Never let a stalled render loop hang a scan; fall back to the old grab.
+        setTimeout(() => {
+          if (pendingSnapshot === resolve) {
+            pendingSnapshot = null;
+            logLine("warn", "Snapshot fell back to a guide-inclusive grab (render stalled)");
+            resolve(captureVideoRegion());
+          }
+        }, 400);
+      });
+    }
+
     // ---------- Scan ----------
     async function executeMultiFrameBurstScan() {
       scanOverlay.classList.remove("hidden");
@@ -1196,7 +1219,7 @@
       // spaces differ, so every AI point has to be mapped back through this rect.
       const capturedVideoRect = { x: videoRect.x, y: videoRect.y, w: videoRect.w, h: videoRect.h };
       const capturedMirrored = isMirrored;
-      const snapshotUrl = snapshotFrame();
+      const snapshotUrl = await snapshotFrame();
       const base64Data = snapshotUrl.split(",")[1] || "";
       // Stored before the request so a timeout still leaves the frame to inspect.
       lastScan = { dataUrl: snapshotUrl, ai: null };
@@ -1537,6 +1560,13 @@
 
       ctx.restore();
 
+      // The video is drawn and the guides are not yet: the only clean frame.
+      if (pendingSnapshot) {
+        const deliver = pendingSnapshot;
+        pendingSnapshot = null;
+        deliver(captureVideoRegion());
+      }
+
       drawGuides(w, h);
     }
 
@@ -1734,7 +1764,7 @@
     // ---------- AI review ----------
     async function analyzeCurrentSwing() {
       unlockMobileAudio();
-      const snapshotUrl = snapshotFrame();
+      const snapshotUrl = await snapshotFrame();
       aiCapturedImg.src = snapshotUrl;
       const base64Data = snapshotUrl.split(",")[1] || "";
 
