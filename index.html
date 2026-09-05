@@ -491,7 +491,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-cleanframe";
+    const BUILD = "2026-09-05-cleanfall";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -1184,6 +1184,28 @@
       }
     }
 
+    // Clean-room capture: redraws the camera frame into an offscreen canvas, so no
+    // overlay can possibly be present. Used when the render loop is not running --
+    // a hidden tab or throttled rAF -- where waiting would never resolve. Geometry
+    // mirrors drawContain (same source, same aspect, same flip), so coordinates map
+    // exactly as they do for the normal path.
+    function captureCleanDirect() {
+      try {
+        const liveReady = !isSimulatedFeed && videoStream && video.videoWidth > 0 && video.readyState >= 2;
+        if (!liveReady) return null;
+        const srcW = video.videoWidth, srcH = video.videoHeight;
+        const out = document.createElement("canvas");
+        out.width = Math.round(Math.min(1024, srcW));
+        out.height = Math.max(1, Math.round(out.width * (srcH / srcW)));
+        const octx = out.getContext("2d");
+        if (isMirrored) { octx.translate(out.width, 0); octx.scale(-1, 1); }
+        octx.drawImage(video, 0, 0, out.width, out.height);
+        return out.toDataURL("image/jpeg", 0.88);
+      } catch (e) {
+        return null;
+      }
+    }
+
     // Waits for the next render pass rather than grabbing the canvas immediately.
     // Grabbing it directly captured the guides too -- the shaft line, the head ring
     // and a vertical line captioned "Tush line" -- so the model was being shown the
@@ -1194,9 +1216,16 @@
         pendingSnapshot = resolve;
         // Never let a stalled render loop hang a scan; fall back to the old grab.
         setTimeout(() => {
-          if (pendingSnapshot === resolve) {
-            pendingSnapshot = null;
-            logLine("warn", "Snapshot fell back to a guide-inclusive grab (render stalled)");
+          if (pendingSnapshot !== resolve) return;
+          pendingSnapshot = null;
+          // Prefer a clean redraw over the display canvas: falling back to a frame
+          // with the guides in it would quietly reintroduce the very bug this fixes.
+          const direct = captureCleanDirect();
+          if (direct) {
+            logLine("warn", "Render loop stalled; captured cleanly from the video source");
+            resolve(direct);
+          } else {
+            logLine("warn", "Render loop stalled and no live video; frame may include guides");
             resolve(captureVideoRegion());
           }
         }, 400);
