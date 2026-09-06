@@ -62,7 +62,25 @@ Every log line carries `build:`. Bump `BUILD` on any deploy worth identifying.
 | Coach review | thinking `medium`, 60s timeout |
 | Coordinates | Gemini's native **0–1000** integer scale, not 0.0–1.0 |
 | Auth | `x-goog-api-key` header, not a URL query param |
+| Key location | encrypted Pages env var `GEMINI_API_KEY`, proxied by `functions/api/gemini.js` |
 | Image | 1024px max width, JPEG 0.88 (~60–95KB) |
+
+The browser calls `/api/gemini`, never Google, unless a key is pasted in
+Settings — that overrides the proxy and goes direct, which exists so a proxy
+problem at the range can be worked around without a computer. It is also the
+trap: a key left in localStorage silently outranks the server, so `geminiRoute()`
+names the live route on the boot line, on every Gemini request, in the
+diagnostics header and in the latency benchmark. Check it before blaming either
+half.
+
+The Function validates the model against a list rather than interpolating it —
+the string lands in a URL path — and returns Google's status and body verbatim,
+because the log's whole value is Google's own error text. Its origin check
+raises the effort from "paste the URL into curl" to "set one header": worth
+having, not security. The endpoint is public, so anyone who finds it can spend
+the quota; a KV-backed rate limit is the real answer and is deliberately not
+built. Setting the secret: Cloudflare → Pages → the project → Settings →
+Environment variables → Add → **Encrypt**, named `GEMINI_API_KEY`, then redeploy.
 
 Never add `temperature`, `top_p` or `top_k` — Gemini 3.x rejects them outright.
 
@@ -164,9 +182,12 @@ Replay are all refused while it runs.
    bends the line and corrupts the shaft-angle readout, which is the core metric.
 
 6. **A failed scan must never render as a lock.** Three outcomes stay visibly
-   distinct: real detection (locked + confidence), no API key (default + geometric
-   guides), error or empty frame (No lock + the actual reason, existing guides left
-   untouched). A confident-looking wrong answer is worse than a visible failure.
+   distinct: real detection (locked + confidence), no cloud answer (default +
+   geometric guides), error or empty frame (No lock + the actual reason, existing
+   guides left untouched). A confident-looking wrong answer is worse than a
+   visible failure. The middle outcome used to mean "no API key saved"; with the
+   proxy a scan is always attempted, so it now means the proxy is unreachable or
+   its secret is unset — and that reason is named rather than swallowed.
 
 7. **Playback timing must come from the buffer, never from `BUFFER_FPS`.** The
    buffer rarely fills at exactly the target: `createImageBitmap` has to keep up,
@@ -268,8 +289,10 @@ Replay are all refused while it runs.
 
 ## Open
 
-1. **API key is client-side.** A Cloudflare Pages Function proxying Gemini would
-   hide it and likely cut latency. Same job as a Netlify Function, also free.
+1. **Rate limiting the proxy.** `/api/gemini` is public: the origin check stops
+   casual use and nothing else, so anyone who finds the URL can spend the quota.
+   KV-backed per-IP limiting is the real fix. Watch the Google Cloud console for
+   unexplained usage in the meantime.
 2. **Account latency.** 7.0–9.8s for a trivial text-only call. If that is the steady
    state rather than cold start, the proxy is worth doing for speed alone.
 3. **`getCanvasCoords` inverts pointer x when mirrored.** By the same reasoning as

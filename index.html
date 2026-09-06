@@ -381,7 +381,7 @@
 
         <div class="space-y-2">
           <label for="input-api-key" class="block font-bold text-slate-200">
-            Gemini API key
+            Gemini API key <span class="font-normal text-slate-400">(optional)</span>
           </label>
           <input
             id="input-api-key"
@@ -391,7 +391,10 @@
             class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 font-mono"
           />
           <p class="text-[10px] text-slate-400">
-            Stored in this browser only. Anyone with access to this device can read it.
+            Leave empty to use the server key, which never reaches this browser.
+            Paste one only to use your own quota or to work around a proxy problem:
+            it is stored in this browser, readable by anyone with the device, and
+            it overrides the server. The log names whichever route is live.
           </p>
         </div>
 
@@ -536,7 +539,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-05-review2";
+    const BUILD = "2026-09-06-proxy";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -1030,7 +1033,8 @@
         "ua:     " + navigator.userAgent,
         "screen: " + screen.width + "x" + screen.height + " dpr=" + (window.devicePixelRatio || 1),
         "canvas: " + canvas.width + "x" + canvas.height + " css=" + canvas.clientWidth + "x" + canvas.clientHeight,
-        "model:  " + geminiModel + "  key=" + (userApiKey ? "set (" + userApiKey.length + " chars)" : "NONE"),
+        "gemini: " + geminiModel + "  route=" + geminiRoute() +
+          (userApiKey ? "  key=set (" + userApiKey.length + " chars)" : "  key=server-side"),
         "camera: " + (isSimulatedFeed ? "simulation" : currentFacingMode + " " + video.videoWidth + "x" + video.videoHeight),
         "mirror: " + isMirrored + "   mode: " + appMode,
         "--------"
@@ -1066,19 +1070,16 @@
     // low levels says whether latency is thinking time or network/queue time. No
     // image and no golf stance needed, so it is runnable from the couch.
     async function testApiKey() {
-      if (!userApiKey) {
-        logLine("warn", "API test skipped: no key saved in Settings");
-        renderLog();
-        return;
-      }
-      const url = "https://generativelanguage.googleapis.com/v1beta/models/" + geminiModel + ":generateContent";
+      const url = geminiUrl();
       const variants = [
         { label: "default thinking", cfg: null },
         { label: "thinkingLevel minimal", cfg: { thinkingLevel: "minimal" } },
         { label: "thinkingLevel low", cfg: { thinkingLevel: "low" } }
       ];
 
-      logLine("info", "Latency benchmark -> " + geminiModel + " from " + location.origin);
+      // Whichever route is live is the one worth measuring: via the proxy this
+      // also proves the secret is set, which is otherwise invisible from a phone.
+      logLine("info", "Latency benchmark -> " + geminiModel + " via " + geminiRoute() + " from " + location.origin);
       btnTestApi.disabled = true;
       const prevLabel = btnTestApi.textContent;
       btnTestApi.textContent = "Testing...";
@@ -1090,8 +1091,8 @@
         try {
           const res = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json", "x-goog-api-key": userApiKey },
-            body: JSON.stringify(payload)
+            headers: geminiHeaders(),
+            body: geminiBody(payload)
           });
           const ms = Math.round(performance.now() - t0);
           const body = await res.text();
@@ -1765,10 +1766,32 @@
       if (saved && GEMINI_MODELS.some(m => m.id === saved)) geminiModel = saved;
     } catch (e) {}
 
+    // The proxy keeps the key on the server; a key pasted in Settings overrides
+    // it and goes direct. One place decides, so no two call sites can disagree
+    // about which is in play -- and geminiRoute() is what the log reports.
+    const GEMINI_PROXY_URL = "/api/gemini";
+    function geminiRoute() { return userApiKey ? "direct (your key)" : "proxy"; }
+    function geminiUrl() {
+      return userApiKey
+        ? "https://generativelanguage.googleapis.com/v1beta/models/" + geminiModel + ":generateContent"
+        : GEMINI_PROXY_URL;
+    }
+    function geminiHeaders() {
+      const h = { "Content-Type": "application/json" };
+      // The proxy supplies the key itself; sending one would be pointless here
+      // and would put it back on the wire this change exists to take it off.
+      if (userApiKey) h["x-goog-api-key"] = userApiKey;
+      return h;
+    }
+    // Direct calls take Google's payload as the whole body; the proxy needs the
+    // model too, because it validates that against a list rather than trusting
+    // a string that ends up in a URL path.
+    function geminiBody(payload) {
+      return JSON.stringify(userApiKey ? payload : { model: geminiModel, payload: payload });
+    }
+
     async function callGemini(prompt, base64Data, timeoutMs, thinkingLevel) {
-      if (!userApiKey) return null;
-      const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
-                  geminiModel + ":generateContent";
+      const url = geminiUrl();
 
       const generationConfig = { responseMimeType: "application/json" };
       // Gemini 3.x thinking control: must be nested under thinkingConfig.thinkingLevel,
@@ -1786,18 +1809,15 @@
         generationConfig: generationConfig
       };
 
-      logLine("info", "Gemini request", { model: geminiModel, thinking: thinkingLevel || "none", imageKB: Math.round((base64Data || "").length * 0.75 / 1024), timeoutMs: timeoutMs || 20000 });
+      logLine("info", "Gemini request", { route: geminiRoute(), model: geminiModel, thinking: thinkingLevel || "none", imageKB: Math.round((base64Data || "").length * 0.75 / 1024), timeoutMs: timeoutMs || 20000 });
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs || 20000);
       try {
         const res = await fetch(url, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": userApiKey
-          },
-          body: JSON.stringify(payload),
+          headers: geminiHeaders(),
+          body: geminiBody(payload),
           signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -1934,7 +1954,7 @@
       }
 
       scanOverlay.classList.remove("hidden");
-      scanBurstProgress.textContent = userApiKey ? "Analyzing address stance" : "Using geometric fallback";
+      scanBurstProgress.textContent = "Analyzing address stance";
 
       const profile = STANCE_PROFILES[currentStanceIndex];
       const isLefty = profile.gluteSide === "left";
@@ -2035,11 +2055,11 @@
       // confident "locked" badge at 70% whether or not anything was detected,
       // which hid API errors and empty frames behind plausible-looking guides.
       const aiOk = !!(ai && ai.detected);
+      // A scan is always attempted now, so a failure is always worth naming --
+      // there is no longer a "no key, nothing was tried" case to stay quiet for.
       let failReason = "";
-      if (userApiKey) {
-        if (!ai) failReason = lastGeminiError || "No response";
-        else if (!ai.detected) failReason = "No stance found in frame";
-      }
+      if (!ai) failReason = lastGeminiError || "No response";
+      else if (!ai.detected) failReason = "No stance found in frame";
 
       if (failReason) {
         // Leave the guides where they are rather than yanking them to a canned
@@ -2634,9 +2654,7 @@
 
       if (!parsed) {
         parsed = {
-          rating: userApiKey
-            ? "Review unavailable" + (lastGeminiError ? " — " + lastGeminiError : "")
-            : "Add an API key for AI review",
+          rating: "Review unavailable" + (lastGeminiError ? " — " + lastGeminiError : ""),
           setupAlignment: "No cloud analysis this time. Check your setup against the head ring and tush line: spine tilt balanced, athletic knee flex, glutes touching the purple wall.",
           swingPlane: "Compare the shaft against the green plane line at address. The hands should sit inside the amber corridor.",
           drillRecommendation: "Keep the lead glute touching the tush line through impact to prevent early extension."
@@ -2764,7 +2782,9 @@
         localStorage.setItem("golf_gemini_model", geminiModel);
       } catch (e) {}
       settingsModal.classList.add("hidden");
-      showToast(userApiKey ? "Saved. Using " + geminiModel : "Running without AI review");
+      showToast(userApiKey
+        ? "Saved. Using your own key with " + geminiModel
+        : "Cleared. Using the server key with " + geminiModel);
     });
 
     btnForceCamRestart.addEventListener("click", async () => {
@@ -3001,7 +3021,8 @@
         screen: screen.width + "x" + screen.height,
         canvas: canvas.width + "x" + canvas.height,
         model: geminiModel,
-        key: userApiKey ? "set (" + userApiKey.length + " chars)" : "NONE"
+        route: geminiRoute(),
+        key: userApiKey ? "set (" + userApiKey.length + " chars)" : "server-side"
       });
       // Camera waits for the user gesture on the overlay (required by iOS)
     }
