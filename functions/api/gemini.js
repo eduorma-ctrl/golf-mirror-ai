@@ -21,10 +21,13 @@
 // that replaced that with a tidy message of its own would cost exactly the
 // debugging the log exists to provide.
 
+// MUST stay in step with GEMINI_MODELS in index.html. A name in the picker but
+// not here is a 400 the golfer cannot explain; a name here but not in the picker
+// is merely dead weight. /api/models lists what the key can actually reach.
 const ALLOWED_MODELS = new Set([
   "gemini-3.7-flash",
-  "gemini-3-pro-preview",
-  "gemini-3-flash-preview"
+  "gemini-3.8-flash",
+  "gemini-3.1-flash-lite"
 ]);
 
 // Images arrive as base64 at roughly 60-95KB; the coach review is text-only.
