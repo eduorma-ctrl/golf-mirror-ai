@@ -216,6 +216,11 @@
       </div>
     </div>
 
+    <div id="rec-indicator" class="hidden absolute top-4 left-4 bg-rose-600 text-white font-bold text-xs px-3 py-1 rounded-full backdrop-blur shadow-xl flex items-center gap-1.5 z-20">
+      <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+      <span id="rec-indicator-text">REC 10.0s</span>
+    </div>
+
     <div id="lock-flash-overlay" class="hidden absolute inset-0 bg-emerald-500/30 pointer-events-none z-20 animate-lock-flash"></div>
 
     <!-- Countdown -->
@@ -314,13 +319,14 @@
         <button id="btn-mode-delay" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition">
           Delayed
         </button>
-        <button id="btn-mode-replay" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition">
-          Replay
+        <button id="btn-mode-record" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 hover:text-white transition">
+          Record
         </button>
-        <span id="swing-badge" class="hidden items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/20 border border-sky-500/50 text-sky-300 text-[10px] font-bold">
-          <i data-lucide="check" class="w-3 h-3"></i> Swing
-          <button id="btn-discard-swing" class="ml-0.5 text-sky-400/70 hover:text-white" title="Discard the captured swing">&times;</button>
-        </span>
+      </div>
+
+      <div id="record-controls" class="hidden flex-1 items-center justify-end gap-1.5 min-w-0">
+        <button id="btn-record-length" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-rose-300 text-[11px] font-bold active:scale-95 transition" title="Recording length">10s</button>
+        <button id="btn-record-ai" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 text-[11px] font-bold active:scale-95 transition" title="Analyse the swing with AI after recording">AI off</button>
       </div>
 
       <div id="delay-controls" class="flex-1 flex items-center justify-end gap-2 opacity-50 pointer-events-none transition-opacity min-w-0">
@@ -543,7 +549,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-06-setup";
+    const BUILD = "2026-09-06-record";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -581,9 +587,11 @@
     const motionPrev = { pixels: null };
 
     const frameBuffer = [];
-    // Raw bitmaps, so this is the wrong lever to keep pulling. Much past ten
-    // seconds and a phone will feel it; longer clips want MediaRecorder.
-    const MAX_BUFFER_SECONDS = 10;
+    // Raw bitmaps, so this is the wrong lever to keep pulling. The ceiling now
+    // has to cover the longest recording rather than a rolling window, but it is
+    // occupied far less of the time: Live never buffers, Delay keeps only what
+    // its slider can reach, and Record holds frames only inside its own window.
+    const MAX_BUFFER_SECONDS = 15;
     // A clubhead at impact moves ~45 m/s: at 20fps it crossed more than two
     // metres between frames and a frame at impact essentially never happened.
     const BUFFER_FPS = 30;
@@ -600,38 +608,25 @@
     // and 120Hz alike without capturing early.
     const BUFFER_GAP_MS = 1000 / BUFFER_FPS - 4;
 
-    // The held swing. Frames are moved here out of frameBuffer, never copied:
-    // two arrays sharing ImageBitmaps would need refcounting to know when
-    // close() is safe, and closing one another array still draws is a crash.
-    const swingClip = [];
-    const SWING_CLIP_SECONDS = 4;
-
     // Motion, sampled at 10Hz rather than per frame -- getImageData is a
     // GPU-to-CPU readback, which is why the countdown's stability check has
-    // always been the only thing doing it.
+    // always been the only thing doing it. It decides nothing now: each frame
+    // carries its reading so the trace can show where the action is inside a
+    // recorded clip. Navigation, never a trigger.
     const MOTION_SAMPLE_MS = 100;
-    // Guesses until they meet a real swing. The countdown calls under 14 "still"
-    // on the same scale, so a swing should clear SWING_ON comfortably. Every
-    // capture and every near-miss logs its numbers; tune from those.
-    const SWING_ON = 35;
-    const SWING_OFF = 12;
-    const SWING_MIN_MS = 150;
-    const SWING_QUIET_MS = 1200;
-    // A swing is over in about a second and a half. Walking to the phone and
-    // stopping is the same "burst then stillness" shape but lasts far longer,
-    // and duration separates the two more cleanly than any motion threshold.
-    const SWING_MAX_MS = 2500;
-    const SWING_COOLDOWN_MS = 3000;
-    // A held clip the golfer has not opened yet is the swing they came for. It
-    // is never replaced -- the walk over would otherwise be what replaces it.
-    let swingClipViewed = false;
     let motionValue = 0;
     let lastMotionSample = 0;
-    let swingActive = false;
-    let swingStartedAt = 0;
-    let swingPeak = 0;
-    let swingQuietSince = 0;
-    let lastCaptureAt = 0;
+
+    // Record is a mode with two phases. "armed" is the countdown, "recording"
+    // is the window, "review" is the transport over what was caught. Review
+    // being a phase rather than a fourth button keeps the footer usable on a
+    // phone, which is where this app is used.
+    const RECORD_LENGTHS = [5, 10, 15];
+    let recordLengthIndex = 1;
+    let recordState = "idle";
+    let recordStartedAt = 0;
+    let aiSwingAnalysis = false;
+    try { aiSwingAnalysis = localStorage.getItem("golf_ai_swing") === "1"; } catch (e) {}
     let lastBufferPushTime = 0;
     let bufferBusy = false;
 
@@ -793,7 +788,7 @@
 
     const btnModeLive = $("btn-mode-live");
     const btnModeDelay = $("btn-mode-delay");
-    const btnModeReplay = $("btn-mode-replay");
+    const btnModeRecord = $("btn-mode-record");
     const replayBar = $("replay-bar");
     const btnReplayPlay = $("btn-replay-play");
     const btnReplayPrev = $("btn-replay-prev");
@@ -804,8 +799,11 @@
     const btnSaveFrame = $("btn-save-frame");
     const btnSaveClip = $("btn-save-clip");
     const exportStatus = $("export-status");
-    const swingBadge = $("swing-badge");
-    const btnDiscardSwing = $("btn-discard-swing");
+    const recordControls = $("record-controls");
+    const btnRecordLength = $("btn-record-length");
+    const btnRecordAi = $("btn-record-ai");
+    const recIndicator = $("rec-indicator");
+    const recIndicatorText = $("rec-indicator-text");
     const motionTrace = $("motion-trace");
     const motionCtx = motionTrace.getContext("2d");
     const delayControls = $("delay-controls");
@@ -874,7 +872,7 @@
       [guideToggles, tushAdjustWidget, planeStatusBadge, diagnosticsPill].forEach((el) => {
         if (el) el.classList.toggle("hidden", focusMode);
       });
-      replayBar.classList.toggle("hidden", focusMode || appMode !== "replay");
+      replayBar.classList.toggle("hidden", focusMode || recordState !== "review");
 
       if (focusMode) {
         framingReticle.classList.add("hidden");
@@ -1212,9 +1210,8 @@
       logLine("warn", "Simulation mode" + (reason ? ": " + reason : ""));
     }
 
-    // The held swing when there is one, the live buffer otherwise.
     function replaySourceFrames() {
-      return replayFrames || (swingClip.length ? swingClip : frameBuffer);
+      return replayFrames || frameBuffer;
     }
 
     function measureBufferFps(frames) {
@@ -1493,22 +1490,14 @@
       if (busy) exportStatus.textContent = "Recording...";
     }
 
-    // Newest frame at or before a time, across the live buffer and the held
-    // clip. The two never overlap in time, so whichever contains the target
-    // wins; otherwise the newest frame older than the target, from either.
+    // Newest frame at or before a time. This had to search two arrays while
+    // auto-capture was moving frames out of the buffer behind delay mode's
+    // back; there is one array again.
     function newestFrameAtOrBefore(t) {
-      let best = null;
-      const consider = (arr) => {
-        for (let i = arr.length - 1; i >= 0; i--) {
-          if (arr[i].timestamp <= t) {
-            if (!best || arr[i].timestamp > best.timestamp) best = arr[i];
-            return;
-          }
-        }
-      };
-      consider(frameBuffer);
-      consider(swingClip);
-      return best || frameBuffer[0] || swingClip[0] || null;
+      for (let i = frameBuffer.length - 1; i >= 0; i--) {
+        if (frameBuffer[i].timestamp <= t) return frameBuffer[i];
+      }
+      return frameBuffer[0] || null;
     }
 
     function closeFrames(frames) {
@@ -1594,8 +1583,8 @@
     motionCanvas.width = 64; motionCanvas.height = 64;
     const motionSampleCtx = motionCanvas.getContext("2d", { willReadFrequently: true });
 
-    // Sampled from the video element rather than the main canvas so that guides,
-    // badges and the replay frame itself cannot register as movement.
+    // Sampled from the video element rather than the main canvas so that guides
+    // and the replayed frame itself cannot register as movement.
     function sampleMotion(now) {
       if (now - lastMotionSample < MOTION_SAMPLE_MS) return;
       lastMotionSample = now;
@@ -1605,96 +1594,54 @@
       } catch (e) { /* readback can fail mid-resize; the next sample retries */ }
     }
 
-    // A swing is a burst of motion followed by the golfer standing still. Both
-    // halves are required: motion alone is someone walking past, and stillness
-    // alone is the whole rest of the session.
-    function detectSwing(now) {
-      if (lastCaptureAt && now - lastCaptureAt < SWING_COOLDOWN_MS) return;
+    // ---------- Recording ----------
+    function recordSeconds() { return RECORD_LENGTHS[recordLengthIndex]; }
 
-      if (!swingActive) {
-        if (motionValue >= SWING_ON) {
-          swingActive = true;
-          swingStartedAt = now;
-          swingPeak = motionValue;
-          swingQuietSince = 0;
-        }
-        return;
-      }
-
-      if (motionValue > swingPeak) swingPeak = motionValue;
-
-      // Still moving past the longest a swing could take: this is a walk, a
-      // practice waggle, or someone crossing the frame. Abandon it -- letting
-      // it run would capture a window that no longer contains anything.
-      if (now - swingStartedAt > SWING_MAX_MS) {
-        logLine("info", "Motion ignored - too long for a swing", {
-          activeMs: Math.round(now - swingStartedAt), peak: +swingPeak.toFixed(1), maxMs: SWING_MAX_MS
-        });
-        swingActive = false;
-        lastCaptureAt = now;
-        return;
-      }
-
-      if (motionValue < SWING_OFF) {
-        if (!swingQuietSince) swingQuietSince = now;
-        if (now - swingQuietSince >= SWING_QUIET_MS) {
-          const activeMs = swingQuietSince - swingStartedAt;
-          swingActive = false;
-          if (activeMs >= SWING_MIN_MS) {
-            captureSwing(now, activeMs);
-          } else {
-            // Logged rather than dropped: a threshold nobody can see is a
-            // threshold nobody can tune.
-            logLine("info", "Motion ignored - too brief for a swing", {
-              activeMs: Math.round(activeMs), peak: +swingPeak.toFixed(1), minMs: SWING_MIN_MS
-            });
-          }
-        }
-      } else {
-        swingQuietSince = 0;
-      }
+    function startRecording() {
+      clearFrameBuffer();
+      recordState = "recording";
+      recordStartedAt = performance.now();
+      replayFrames = null;
+      replayBar.classList.add("hidden");
+      recIndicator.classList.remove("hidden");
+      recIndicatorText.textContent = "REC " + recordSeconds().toFixed(1) + "s";
+      logLine("info", "Recording started", { seconds: recordSeconds(), ai: aiSwingAnalysis });
     }
 
-    function captureSwing(now, activeMs) {
-      if (swingClip.length && !swingClipViewed) {
-        // The first capture after a swing is the swing. Anything that fires
-        // before the golfer has looked at it is the walk over, and must lose.
-        lastCaptureAt = now;
-        logLine("info", "Motion ignored - a swing is already held and unviewed", {
-          activeMs: Math.round(activeMs), peak: +swingPeak.toFixed(1)
-        });
+    function finishRecording() {
+      recordState = "review";
+      recIndicator.classList.add("hidden");
+      if (frameBuffer.length < 2) {
+        recordState = "idle";
+        showToast("Nothing was recorded - is the camera running?", 4000);
+        logLine("warn", "Recording produced no frames");
         return;
       }
-      // Moved, not copied. The live buffer keeps rolling from here, so a false
-      // trigger costs a few seconds of scrollback and never the next swing.
-      discardSwingClip();
-      const cutoff = now - SWING_CLIP_SECONDS * 1000;
-      let i = frameBuffer.length;
-      while (i > 0 && frameBuffer[i - 1].timestamp >= cutoff) i--;
-      const taken = frameBuffer.splice(i);
-      for (let k = 0; k < taken.length; k++) swingClip.push(taken[k]);
-
-      if (swingClip.length < 2) { discardSwingClip(); return; }
-
-      lastCaptureAt = now;
-      swingClipViewed = false;
-      swingBadge.classList.remove("hidden");
-      swingBadge.classList.add("flex");
-      showToast("Swing captured - tap Replay", 3500);
-      logLine("ok", "Swing captured", {
-        frames: swingClip.length,
-        seconds: +((swingClip[swingClip.length - 1].timestamp - swingClip[0].timestamp) / 1000).toFixed(1),
-        peak: +swingPeak.toFixed(1),
-        activeMs: Math.round(activeMs),
-        thresholds: { on: SWING_ON, off: SWING_OFF, quietMs: SWING_QUIET_MS }
+      replayFrames = frameBuffer;
+      replayIndex = 0;
+      replaySpeed = 1;
+      btnReplaySpeed.textContent = "1x";
+      replayFps = measureBufferFps(frameBuffer);
+      replayScrub.max = String(Math.max(1, frameBuffer.length - 1));
+      replayBar.classList.remove("hidden");
+      sizeMotionTrace();
+      setReplayPlaying(true);
+      syncReplayUi(true);
+      playBeep(880, 0.2);
+      logLine("ok", "Recording finished", {
+        frames: frameBuffer.length,
+        seconds: +(frameBuffer.length / replayFps).toFixed(1),
+        actualFps: +replayFps.toFixed(1)
       });
+      if (aiSwingAnalysis) showToast("Swing analysis is not built yet", 3000);
     }
 
-    function discardSwingClip() {
-      closeFrames(swingClip);
-      swingClipViewed = false;
-      swingBadge.classList.add("hidden");
-      swingBadge.classList.remove("flex");
+    function cancelRecording() {
+      recordState = "idle";
+      recIndicator.classList.add("hidden");
+      replayBar.classList.add("hidden");
+      replayFrames = null;
+      replayPlaying = false;
     }
 
     // ---------- Timer ----------
@@ -1738,7 +1685,10 @@
           countdownOverlay.classList.add("hidden");
           resetTimerButton();
           playBeep(880, 0.25);
-          executeMultiFrameBurstScan();
+          // The same countdown serves both: it exists to give the golfer time to
+          // walk in and settle, which is as true of a recording as of a scan.
+          if (appMode === "record") startRecording();
+          else executeMultiFrameBurstScan();
         }
       }, 1000);
     }
@@ -2394,7 +2344,7 @@
         canvas.width = needW;
         canvas.height = needH;
         // The trace only needs re-sizing when the layout actually changed.
-        if (appMode === "replay") sizeMotionTrace();
+        if (recordState === "review") sizeMotionTrace();
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
       return true;
@@ -2434,27 +2384,26 @@
         stopClipExport();
       }
 
-      // Not while replaying: the sample would read a paused frame, and a capture
-      // would move frames out from under the playhead.
-      if (liveReady && appMode !== "replay") {
-        sampleMotion(now);
-        detectSwing(now);
-      }
+      // Not while reviewing: the sample would read a paused frame, and the
+      // reading is only wanted for frames actually being buffered.
+      if (liveReady && recordState !== "review") sampleMotion(now);
 
-      // Always recording, so Replay has something to show whichever mode the
-      // golfer was in when they swung. Frozen in replay: the clip being watched
-      // must not change underneath the playhead.
-      if (liveReady && appMode !== "replay" && !bufferBusy &&
+      // Only where a buffer is wanted. Live keeps none -- it used to feed the
+      // motion trigger, and with that gone the cost has no purchaser.
+      const buffering = (appMode === "delay") ||
+                        (appMode === "record" && recordState === "recording");
+
+      if (liveReady && buffering && !bufferBusy &&
           now - lastBufferPushTime > BUFFER_GAP_MS &&
           typeof createImageBitmap !== "undefined") {
         lastBufferPushTime = now;
         bufferBusy = true;
         createImageBitmap(video)
           .then(bitmap => {
-            // This resolves a frame or two late. If replay began in between,
+            // This resolves a frame or two late. If review began in between,
             // the buffer is frozen and already measured -- appending here would
             // end the clip on a frame the golfer never saw.
-            if (appMode === "replay") {
+            if (recordState === "review" || !buffering) {
               if (bitmap && bitmap.close) { try { bitmap.close(); } catch (e) {} }
               return;
             }
@@ -2466,17 +2415,24 @@
           .finally(() => { bufferBusy = false; });
       }
 
-      // Prune every frame regardless of async outcome -- except in replay, where
-      // dropping the head would slide the clip out from under the playhead.
-      if (appMode !== "replay") {
-        const maxKeep = MAX_BUFFER_SECONDS * 1000;
+      if (appMode === "delay") {
+        // Only what the slider can reach, plus a margin. Holding the full
+        // ceiling for a three second delay was memory nobody was spending.
+        const maxKeep = Math.min(MAX_BUFFER_SECONDS, delaySeconds + 2) * 1000;
         while (frameBuffer.length &&
                (now - frameBuffer[0].timestamp > maxKeep ||
-                frameBuffer.length + swingClip.length > MAX_BUFFER_FRAMES)) {
+                frameBuffer.length > MAX_BUFFER_FRAMES)) {
           const old = frameBuffer.shift();
           if (old.bitmap && old.bitmap.close) { try { old.bitmap.close(); } catch (e) {} }
         }
-      } else if (replaySourceFrames().length) {
+      } else if (appMode === "record" && recordState === "recording") {
+        const elapsed = now - recordStartedAt;
+        const total = recordSeconds() * 1000;
+        recIndicatorText.textContent = "REC " + Math.max(0, (total - elapsed) / 1000).toFixed(1) + "s";
+        // A hard frame cap as well as a clock: a slow phone that cannot keep up
+        // still must not be allowed to outgrow the ceiling.
+        if (elapsed >= total || frameBuffer.length >= MAX_BUFFER_FRAMES) finishRecording();
+      } else if (recordState === "review" && frameBuffer.length) {
         advanceReplay(now);
         drawMotionTrace();
       }
@@ -2491,11 +2447,11 @@
       if (!liveReady) {
         videoRect = { x: 0, y: 0, w: w, h: h };
         drawSimulationGolfer(w, h);
-      } else if (appMode === "replay" && replaySourceFrames().length) {
+      } else if (recordState === "review" && replaySourceFrames().length) {
         const rf = replaySourceFrames()[replayFrameIndex()];
         if (rf && rf.bitmap) drawContain(rf.bitmap, rf.bitmap.width, rf.bitmap.height, w, h);
         else drawContain(video, video.videoWidth, video.videoHeight, w, h);
-      } else if (appMode === "live" || frameBuffer.length === 0) {
+      } else if (appMode !== "delay" || frameBuffer.length === 0) {
         drawContain(video, video.videoWidth, video.videoHeight, w, h);
       } else {
         const targetTime = now - delaySeconds * 1000;
@@ -2685,7 +2641,7 @@
       // Guides must not move during an export -- the recording would show them
       // jumping, and while unmirrorForExport is set getCanvasCoords and
       // pxToVidX would each flip x, cancelling out and dragging the wrong way.
-      if (exportingClip) return;
+      if (exportingClip || recordState === "recording") return;
       const pos = getCanvasCoords(e);
       const w = canvas.clientWidth || 1;
       const h = canvas.clientHeight || 1;
@@ -2917,65 +2873,65 @@
     const MODE_BTN_IDLE = "bg-slate-800 text-slate-400 border border-slate-700 hover:text-white";
 
     function setAppMode(mode) {
-      // Refusing early keeps the button honest: nothing buffered means nothing
-      // to replay, and silently showing a frozen live frame would look broken.
-      // The held swing is preferred: it is centred on what the golfer came to
-      // look at, where the live buffer merely ends at whenever they arrived.
-      const entering = swingClip.length ? swingClip : frameBuffer;
-      if (mode === "replay" && !entering.length) {
-        showToast("Nothing recorded yet - give it a few seconds", 3000);
-        return;
-      }
       if (exportingClip) {
-        // Re-entering replay would rewind the playhead under a running
-        // recorder; walking out would keep capturing the live feed into a
-        // file the golfer asked to be of their replay.
-        if (mode === "replay") return;
+        // Re-entering the mode being exported would rewind the playhead under a
+        // running recorder; leaving would keep capturing the live feed into a
+        // file the golfer asked to be of their clip.
+        if (mode === appMode) return;
         stopClipExport();
       }
+      if (isCountingDown) cancelHandsFreeTimer();
+      // Leaving Record throws the clip away, and going back to it starts clean:
+      // a stale review of a recording made two modes ago is a thing to explain
+      // rather than a thing to want.
+      if (appMode === "record" && mode !== "record") cancelRecording();
+      if (mode === "record") { cancelRecording(); clearFrameBuffer(); }
       appMode = mode;
       btnModeLive.className = MODE_BTN_BASE + (mode === "live"
         ? "bg-emerald-600 text-white shadow" : MODE_BTN_IDLE);
       btnModeDelay.className = MODE_BTN_BASE + (mode === "delay"
         ? "bg-amber-500 text-slate-950 shadow" : MODE_BTN_IDLE);
-      btnModeReplay.className = MODE_BTN_BASE + (mode === "replay"
-        ? "bg-sky-500 text-slate-950 shadow" : MODE_BTN_IDLE);
+      btnModeRecord.className = MODE_BTN_BASE + (mode === "record"
+        ? "bg-rose-500 text-slate-950 shadow" : MODE_BTN_IDLE);
+      delayControls.classList.toggle("hidden", mode !== "delay");
+      delayControls.classList.toggle("flex", mode === "delay");
       delayControls.classList.toggle("opacity-50", mode !== "delay");
       delayControls.classList.toggle("pointer-events-none", mode !== "delay");
       delayIndicator.classList.toggle("hidden", mode !== "delay");
-      replayBar.classList.toggle("hidden", mode !== "replay");
+      recordControls.classList.toggle("hidden", mode !== "record");
+      recordControls.classList.toggle("flex", mode === "record");
+      exportStatus.textContent = "";
 
-      if (mode === "replay") {
-        replayFrames = entering;
-        if (entering === swingClip) swingClipViewed = true;
-        exportStatus.textContent = "";
-        replayIndex = 0;
-        replaySpeed = 1;
-        btnReplaySpeed.textContent = "1x";
-        replayFps = measureBufferFps(entering);
-        replayScrub.max = String(Math.max(1, entering.length - 1));
-        // The bar has just been unhidden; size the trace now, once, rather
-        // than reading layout from inside the render loop.
-        replayBar.classList.remove("hidden");
-        sizeMotionTrace();
-        setReplayPlaying(true);
-        syncReplayUi(true);
-        // actualFps against target is the whole answer on whether 60 is worth
-        // asking for: short of target here means the pipeline, not the camera.
-        logLine("info", "Replay", {
-          source: entering === swingClip ? "captured swing" : "live buffer",
-          frames: entering.length,
-          seconds: +(entering.length / replayFps).toFixed(1),
-          actualFps: +replayFps.toFixed(1),
-          targetFps: BUFFER_FPS
-        });
-      } else {
-        replayPlaying = false;
-        replayFrames = null;
+      if (mode === "record") {
+        btnRecordLength.textContent = recordSeconds() + "s";
+        syncRecordAiButton();
+        showToast("Tap Lock to start the countdown", 3000);
       }
     }
 
-    btnModeReplay.addEventListener("click", () => setAppMode("replay"));
+    btnModeRecord.addEventListener("click", () => setAppMode("record"));
+
+    btnRecordLength.addEventListener("click", () => {
+      if (recordState === "recording") return;
+      recordLengthIndex = (recordLengthIndex + 1) % RECORD_LENGTHS.length;
+      btnRecordLength.textContent = recordSeconds() + "s";
+      showToast("Recording length " + recordSeconds() + "s");
+    });
+
+    btnRecordAi.addEventListener("click", () => {
+      aiSwingAnalysis = !aiSwingAnalysis;
+      try { localStorage.setItem("golf_ai_swing", aiSwingAnalysis ? "1" : "0"); } catch (e) {}
+      syncRecordAiButton();
+      showToast(aiSwingAnalysis ? "AI swing analysis on" : "AI swing analysis off");
+    });
+
+    function syncRecordAiButton() {
+      btnRecordAi.textContent = aiSwingAnalysis ? "AI on" : "AI off";
+      btnRecordAi.classList.toggle("text-emerald-300", aiSwingAnalysis);
+      btnRecordAi.classList.toggle("border-emerald-500/50", aiSwingAnalysis);
+      btnRecordAi.classList.toggle("text-slate-400", !aiSwingAnalysis);
+      btnRecordAi.classList.toggle("border-slate-700", !aiSwingAnalysis);
+    }
 
     btnReplayPlay.addEventListener("click", () => setReplayPlaying(!replayPlaying));
     btnReplayPrev.addEventListener("click", () => stepReplay(-1));
@@ -2997,13 +2953,6 @@
       syncReplayUi();
     });
 
-    btnDiscardSwing.addEventListener("click", (e) => {
-      e.stopPropagation();
-      discardSwingClip();
-      if (appMode === "replay") setAppMode("live");
-      showToast("Swing discarded");
-    });
-
     btnSaveFrame.addEventListener("click", saveFrame);
     btnSaveClip.addEventListener("click", startClipExport);
 
@@ -3015,6 +2964,7 @@
 
     btnModeLive.addEventListener("click", () => {
       setAppMode("live");
+      clearFrameBuffer();
     });
 
     btnModeDelay.addEventListener("click", () => {
@@ -3104,7 +3054,7 @@
         // rAF stops when hidden, so the watchdog stops with it and the recorder
         // would encode one frozen frame for as long as the page stayed away.
         if (exportingClip) stopClipExport();
-        if (appMode !== "replay") clearFrameBuffer();
+        if (recordState !== "review") clearFrameBuffer();
       }
       else if (!isSimulatedFeed && video.paused) { video.play().catch(() => {}); }
     });
