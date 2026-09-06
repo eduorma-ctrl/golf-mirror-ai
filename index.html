@@ -219,10 +219,14 @@
     <div id="lock-flash-overlay" class="hidden absolute inset-0 bg-emerald-500/30 pointer-events-none z-20 animate-lock-flash"></div>
 
     <!-- Countdown -->
-    <div id="countdown-overlay" class="hidden absolute inset-0 bg-black/80 backdrop-blur-sm z-30 flex flex-col items-center justify-center pointer-events-none">
-      <div class="flex flex-col items-center gap-2 text-center px-4">
-        <p class="text-emerald-400 text-xs sm:text-sm uppercase tracking-widest font-bold">Step into address position</p>
-        <span id="countdown-number" class="text-7xl sm:text-9xl font-black text-white drop-shadow-[0_0_25px_#10b981] animate-countdown-num">5</span>
+    <!-- No backdrop. The golfer is being asked to step into frame and set up, and
+         the countdown used to black out the only thing that would tell them
+         whether they had. Held at the top, clear of where a body stands, with
+         its own dark halo so it survives a bright range or a white wall. -->
+    <div id="countdown-overlay" class="hidden absolute inset-0 z-30 flex flex-col items-center justify-start pt-4 pointer-events-none">
+      <div class="flex flex-col items-center gap-1 text-center px-4">
+        <p class="text-emerald-300 text-xs sm:text-sm uppercase tracking-widest font-bold" style="text-shadow: 0 2px 8px rgba(0,0,0,.95)">Step into address position</p>
+        <span id="countdown-number" class="text-7xl sm:text-9xl font-black text-white animate-countdown-num" style="text-shadow: 0 0 22px #10b981, 0 3px 12px rgba(0,0,0,.95), 0 0 4px rgba(0,0,0,.9)">5</span>
         <div class="flex items-center gap-2 mt-2 bg-slate-900/90 px-4 py-2 rounded-full border border-slate-700 shadow-xl">
           <span id="stability-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
           <span id="stability-text" class="text-xs text-slate-200 font-medium">Settle address posture</span>
@@ -539,7 +543,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-06-retry";
+    const BUILD = "2026-09-06-setup";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -660,7 +664,7 @@
 
     const guides = {
       planeLine: { enabled: true, start: { x: 0.35, y: 0.84 }, end: { x: 0.68, y: 0.22 } },
-      corridor:  { enabled: true, offsetPx: 45 },
+      corridor:  { enabled: true, offsetPx: 52 },
       headBox:   { enabled: true, x: 0.50, y: 0.28, radius: 0.075 },
       hipLine:   { enabled: true, x: 0.62, y: 0.52 }
     };
