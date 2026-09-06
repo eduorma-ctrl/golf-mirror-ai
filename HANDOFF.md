@@ -55,8 +55,8 @@ Every log line carries `build:`. Bump `BUILD` on any deploy worth identifying.
 
 | Setting | Value |
 | --- | --- |
-| Default model | `gemini-3.7-flash` |
-| Also selectable | `gemini-3-pro-preview`, `gemini-3-flash-preview` |
+| Default model | `gemini-3.7-flash` — what the prompts were tuned against |
+| Also selectable | `gemini-3.8-flash` (newest, busiest), `gemini-3.6-flash` (fallback) |
 | Thinking | `generationConfig.thinkingConfig.thinkingLevel` — **nested** |
 | Stance scan | thinking `low`, 40s timeout |
 | Coach review | thinking `medium`, 60s timeout |
@@ -81,6 +81,28 @@ having, not security. The endpoint is public, so anyone who finds it can spend
 the quota; a KV-backed rate limit is the real answer and is deliberately not
 built. Setting the secret: Cloudflare → Pages → the project → Settings →
 Environment variables → Add → **Encrypt**, named `GEMINI_API_KEY`, then redeploy.
+
+`gemini-3-pro-preview` sat in the picker long after Google retired it, 404ing
+for anyone who chose it, and nothing surfaced that because the one open item
+which would have — "A/B the models on the range" — was never run. **A hardcoded
+model list goes stale silently.** `GET /api/models` now lists what the key can
+actually reach (40 models, 20 of them flash), so this is one curl away from
+being checked rather than a matter of memory.
+
+The list lives in **two files** and they must stay in step: `GEMINI_MODELS` in
+`index.html` and `ALLOWED_MODELS` in `functions/api/gemini.js`. A name in the
+picker but not the allowlist is a 400 the golfer cannot explain; the reverse is
+dead weight. Both carry a comment naming the other.
+
+**A busy model retries before it fails.** The newest generation returns 503
+intermittently — one was caught live while verifying a deploy, with three
+successes seconds later. The picked model gets one retry, then each remaining
+model gets one attempt, and only for transient failures: 429, 5xx and network
+errors. A 400 or 403 stops the sequence, because every model would answer the
+same. The timeout is a budget for the whole sequence, never per attempt — a 503
+returns in ~2s and leaves room, a timeout consumes the budget and correctly
+leaves none. A fallback answer is announced by toast and log, because the result
+then came from a model the picker is not showing.
 
 Never add `temperature`, `top_p` or `top_k` — Gemini 3.x rejects them outright.
 
@@ -256,6 +278,9 @@ Replay are all refused while it runs.
 | **Guide overlays baked into the frame sent to the model** | snapshot taken before `drawGuides()` |
 | Model could not decline the tush line, so it always guessed | `tushDetected`, existing line kept |
 | Tush line locking onto background objects | prompt states it must be on the body outline |
+| API key readable from any browser with the app open | encrypted Pages env var, proxied by `functions/api/gemini.js` |
+| Model picker offered `gemini-3-pro-preview`, retired by Google and 404ing | flash-only list, checkable against `/api/models` |
+| A busy model failed the scan outright | one retry, then fall back a generation, inside one budget |
 | Frame viewer canvas 688px tall in a 636px viewport, hiding Copy | fits width *and* 38vh |
 | Scan before layout → 1×1 image through a zero-sized rect | readiness guard |
 | `DOMContentLoaded` never fired (script at end of body) | `boot()` checks `readyState` |
@@ -305,7 +330,11 @@ Replay are all refused while it runs.
 5. **Tailwind CDN** warns in production. Eventually swap for prebuilt CSS.
 6. **Boot log reports `canvas 300x150`** because it logs before layout settles.
    Cosmetic; the `Scan start` line has the real numbers.
-7. **A/B the models** on the range — 3.7 Flash vs 3 Pro Preview.
+7. **A/B the models** on the range — 3.7 vs 3.8 vs 3.6 Flash. Compare in the
+   frame viewer, not by feel: markers on the golfer means the model read the
+   frame, wherever the guides then land. Note which model answered — a fallback
+   says so in the log, and crediting its work to the picked one is how the
+   retired-model bug hid for so long.
 8. **The swing thresholds are untuned.** `SWING_ON`, `SWING_OFF`, `SWING_MIN_MS`,
    `SWING_MAX_MS` and `SWING_QUIET_MS` are guesses that have not yet met a real
    swing. Every capture logs `peak` and `activeMs`, and every rejection logs why
