@@ -539,7 +539,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-06-flash";
+    const BUILD = "2026-09-06-flash3";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -1761,10 +1761,15 @@
     // MUST stay in step with ALLOWED_MODELS in functions/api/gemini.js -- the
     // proxy validates against that list and answers 400 for anything else.
     // `curl -s <origin>/api/models` lists what the key can actually reach.
+    // Three neighbouring flash generations, so an overloaded one has somewhere
+    // to fall back to. The newest is the likeliest to answer "busy": capacity
+    // follows demand, and a model everyone has just moved to has the least
+    // headroom. Switching to 3.7 or 3.6 is the workaround, and it is why all
+    // three are the same family rather than one flash and one lite.
     const GEMINI_MODELS = [
-      { id: "gemini-3.7-flash",      label: "3.7 Flash (default, proven)" },
-      { id: "gemini-3.8-flash",      label: "3.8 Flash (newest, untested here)" },
-      { id: "gemini-3.1-flash-lite", label: "3.1 Flash Lite (fastest)" }
+      { id: "gemini-3.7-flash", label: "3.7 Flash (default, proven)" },
+      { id: "gemini-3.8-flash", label: "3.8 Flash (newest, busiest)" },
+      { id: "gemini-3.6-flash", label: "3.6 Flash (fallback)" }
     ];
     let geminiModel = "gemini-3.7-flash";
     try {

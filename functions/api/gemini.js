@@ -27,7 +27,7 @@
 const ALLOWED_MODELS = new Set([
   "gemini-3.7-flash",
   "gemini-3.8-flash",
-  "gemini-3.1-flash-lite"
+  "gemini-3.6-flash"
 ]);
 
 // Images arrive as base64 at roughly 60-95KB; the coach review is text-only.
