@@ -30,9 +30,11 @@ const ALLOWED_MODELS = new Set([
   "gemini-3.6-flash"
 ]);
 
-// Images arrive as base64 at roughly 60-95KB; the coach review is text-only.
-// A megabyte is generous for both and stops a stranger posting something huge.
-const MAX_BODY_BYTES = 1024 * 1024;
+// A stance scan is one image at 60-95KB. A swing analysis is six frames of a
+// recording, near 210KB, and a busy scene compresses worse. Four megabytes
+// leaves room for both without ceasing to be a bound on what a stranger can
+// post.
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 const json = (status, obj) =>
   new Response(JSON.stringify(obj), {

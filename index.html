@@ -359,6 +359,9 @@
       <button id="btn-save-clip" class="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-semibold active:scale-95 transition" title="Record one pass of this clip to a video file">
         <i data-lucide="download" class="w-3.5 h-3.5"></i> Save clip
       </button>
+      <button id="btn-analyse-swing" class="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-emerald-600/50 text-emerald-300 text-[11px] font-semibold active:scale-95 transition" title="Analyse this swing with AI">
+        <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> Analyse
+      </button>
       <span id="export-status" class="text-[10px] text-slate-400 truncate"></span>
      </div>
     </div>
@@ -470,21 +473,21 @@
           <div class="space-y-2 text-xs text-slate-300">
             <div class="p-3 bg-slate-800/40 border border-slate-800 rounded-xl">
               <h4 class="font-semibold text-emerald-400 mb-1 flex items-center gap-1.5">
-                <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Setup and pelvic depth
+                <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> <span id="ai-label-1">Setup and pelvic depth</span>
               </h4>
               <p id="ai-setup-text" class="text-slate-300 leading-relaxed"></p>
             </div>
 
             <div class="p-3 bg-slate-800/40 border border-slate-800 rounded-xl">
               <h4 class="font-semibold text-amber-400 mb-1 flex items-center gap-1.5">
-                <i data-lucide="alert-circle" class="w-3.5 h-3.5"></i> Shaft plane and corridor
+                <i data-lucide="alert-circle" class="w-3.5 h-3.5"></i> <span id="ai-label-2">Shaft plane and corridor</span>
               </h4>
               <p id="ai-plane-text" class="text-slate-300 leading-relaxed"></p>
             </div>
 
             <div class="p-3 bg-slate-800/40 border border-slate-800 rounded-xl">
               <h4 class="font-semibold text-sky-400 mb-1 flex items-center gap-1.5">
-                <i data-lucide="zap" class="w-3.5 h-3.5"></i> Rehearsal drill
+                <i data-lucide="zap" class="w-3.5 h-3.5"></i> <span id="ai-label-3">Rehearsal drill</span>
               </h4>
               <p id="ai-drill-text" class="text-slate-300 leading-relaxed"></p>
             </div>
@@ -549,7 +552,7 @@
     "use strict";
 
     // Bump on every deploy. Without this a log cannot prove which build produced it.
-    const BUILD = "2026-09-06-record";
+    const BUILD = "2026-09-06-swingai";
 
     // ---------- State ----------
     let userApiKey = "";
@@ -798,6 +801,7 @@
     const btnReplaySpeed = $("btn-replay-speed");
     const btnSaveFrame = $("btn-save-frame");
     const btnSaveClip = $("btn-save-clip");
+    const btnAnalyseSwing = $("btn-analyse-swing");
     const exportStatus = $("export-status");
     const recordControls = $("record-controls");
     const btnRecordLength = $("btn-record-length");
@@ -833,6 +837,9 @@
     const aiModal = $("ai-modal");
     const btnCloseModal = $("btn-close-modal");
     const btnReAnalyze = $("btn-re-analyze");
+    // Which analysis the modal is currently showing, so its footer button
+    // re-runs the one the golfer is looking at.
+    let aiModalMode = "setup";
     const aiCapturedImg = $("ai-captured-img");
     const aiLoader = $("ai-loader");
     const aiContentBody = $("ai-content-body");
@@ -840,6 +847,9 @@
     const aiSetupText = $("ai-setup-text");
     const aiPlaneText = $("ai-plane-text");
     const aiDrillText = $("ai-drill-text");
+    const aiLabel1 = $("ai-label-1");
+    const aiLabel2 = $("ai-label-2");
+    const aiLabel3 = $("ai-label-3");
 
     const appHeader = $("app-header");
     const appFooter = $("app-footer");
@@ -1633,7 +1643,9 @@
         seconds: +(frameBuffer.length / replayFps).toFixed(1),
         actualFps: +replayFps.toFixed(1)
       });
-      if (aiSwingAnalysis) showToast("Swing analysis is not built yet", 3000);
+      // Only when asked for: an analysis the golfer did not want must never be
+      // what stands between them and their clip.
+      if (aiSwingAnalysis) analyseRecordedSwing();
     }
 
     function cancelRecording() {
@@ -1822,7 +1834,11 @@
       }
     }
 
+    // Accepts one base64 image or several. Several go up in one request, in
+    // order, which is the only way a model can speak about a movement rather
+    // than a pose.
     async function callGemini(prompt, base64Data, timeoutMs, thinkingLevel) {
+      const images = Array.isArray(base64Data) ? base64Data : (base64Data ? [base64Data] : []);
       const generationConfig = { responseMimeType: "application/json" };
       // Gemini 3.x thinking control: must be nested under thinkingConfig.thinkingLevel,
       // NOT a top-level thinking_level field (that shape 400s: "Unknown name").
@@ -1831,10 +1847,9 @@
       const payload = {
         contents: [{
           role: "user",
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: "image/jpeg", data: base64Data } }
-          ]
+          parts: [{ text: prompt }].concat(
+            images.map((b) => ({ inline_data: { mime_type: "image/jpeg", data: b } }))
+          )
         }],
         generationConfig: generationConfig
       };
@@ -1849,7 +1864,8 @@
 
       logLine("info", "Gemini request", {
         route: geminiRoute(), model: picked, thinking: thinkingLevel || "none",
-        imageKB: Math.round((base64Data || "").length * 0.75 / 1024),
+        images: images.length,
+        imageKB: Math.round(images.reduce((t, b) => t + b.length, 0) * 0.75 / 1024),
         budgetMs: totalBudget, plan: plan.join(" -> ")
       });
 
@@ -2689,6 +2705,160 @@
       accuracyScoreText.textContent = "Manual adjustment";
     }
 
+    // ---------- Swing analysis over frames ----------
+    // Its own canvas: the frames are rescaled on the way out, and borrowing one
+    // of the 64x64 scratch canvases would fight whatever else is using it.
+    const swingFrameCanvas = document.createElement("canvas");
+    const swingFrameCtx = swingFrameCanvas.getContext("2d");
+
+    const SWING_ANALYSIS_FRAMES = 6;
+    // Backswing, downswing and a little follow-through. Wider than this and the
+    // sample spreads across seconds of the golfer standing still.
+    const SWING_WINDOW_SEC = 3;
+    // Small enough that six fit a request comfortably, large enough that a club
+    // against a dark floor is still there to be seen.
+    const SWING_FRAME_WIDTH = 512;
+
+    function frameToJpeg(bitmap) {
+      const scale = Math.min(1, SWING_FRAME_WIDTH / bitmap.width);
+      swingFrameCanvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      swingFrameCanvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      swingFrameCtx.drawImage(bitmap, 0, 0, swingFrameCanvas.width, swingFrameCanvas.height);
+      return swingFrameCanvas.toDataURL("image/jpeg", 0.75);
+    }
+
+    // Ten seconds of recording holds about two of swing. Sampling the whole clip
+    // evenly would mostly capture the golfer standing still, so the window is
+    // centred on the strongest motion -- the one job that reading is fit for,
+    // now that it decides nothing about when to record.
+    function pickSwingFrames(frames) {
+      if (frames.length < 2) return [];
+      // Seeded from the middle rather than from zero: on a clip with no motion
+      // at all every frame ties, and the first frame would win a comparison
+      // against zero, aiming the window at the moment before anything happened.
+      let peakIdx = Math.floor(frames.length / 2);
+      let peak = frames[peakIdx].motion || 0;
+      for (let i = 0; i < frames.length; i++) {
+        const m = frames[i].motion || 0;
+        if (m > peak) { peak = m; peakIdx = i; }
+      }
+      const fps = Math.max(1, measureBufferFps(frames));
+      const half = Math.round((SWING_WINDOW_SEC / 2) * fps);
+      let lo = Math.max(0, peakIdx - half);
+      let hi = Math.min(frames.length - 1, peakIdx + half);
+      if (hi - lo < SWING_ANALYSIS_FRAMES) { lo = 0; hi = frames.length - 1; }
+
+      const picked = [];
+      for (let k = 0; k < SWING_ANALYSIS_FRAMES; k++) {
+        const idx = Math.round(lo + (hi - lo) * (k / (SWING_ANALYSIS_FRAMES - 1)));
+        picked.push({ idx: idx, tSec: (idx - lo) / fps });
+      }
+      return { picked: picked, peakIdx: peakIdx, fps: fps, lo: lo, hi: hi };
+    }
+
+    async function analyseRecordedSwing() {
+      const frames = replaySourceFrames();
+      if (recordState !== "review" || frames.length < 4) {
+        showToast("Record a swing first", 3000);
+        return;
+      }
+
+      const sel = pickSwingFrames(frames);
+      if (!sel.picked || !sel.picked.length) { showToast("Not enough frames", 3000); return; }
+
+      const images = [];
+      for (let i = 0; i < sel.picked.length; i++) {
+        const f = frames[sel.picked[i].idx];
+        if (f && f.bitmap) images.push(frameToJpeg(f.bitmap).split(",")[1] || "");
+      }
+      if (images.length < 3) { showToast("Could not read the frames", 3000); return; }
+
+      // The frame it centred on, so a bad choice of window is visible rather
+      // than silently analysed.
+      const peakFrame = frames[sel.peakIdx];
+      if (peakFrame && peakFrame.bitmap) aiCapturedImg.src = frameToJpeg(peakFrame.bitmap);
+
+      aiModal.classList.remove("hidden");
+      aiLoader.classList.remove("hidden");
+      aiContentBody.classList.add("hidden");
+      aiLabel1.textContent = "Early extension";
+      aiLabel2.textContent = "Club on plane";
+      aiLabel3.textContent = "Drill";
+      btnReAnalyze.textContent = "Analyse again";
+      aiModalMode = "swing";
+
+      const profile = STANCE_PROFILES[currentStanceIndex];
+      const gap = (sel.picked.length > 1 ? (sel.picked[1].tSec - sel.picked[0].tSec) : 0);
+
+      const prompt =
+        "You are a PGA instructor. The " + images.length + " images are consecutive frames of ONE golf swing, " +
+        "in chronological order, about " + gap.toFixed(2) + " seconds apart, filmed " + profile.label + ". " +
+        "Frame 1 is the earliest. Treat them as a sequence, not as separate photos.\n" +
+        "Judge two things:\n" +
+        "1. SWING PLANE. Follow the shaft through the frames. Say whether the club stayed on, above or under " +
+        "plane, and say it separately for the backswing and the downswing. Name the frame numbers you are " +
+        "describing.\n" +
+        "2. EARLY EXTENSION. This is the hips and pelvis moving TOWARD the ball and the torso standing up " +
+        "between address and impact. Compare the hip line frame by frame against where it was in the first " +
+        "frame. Report severity as none, mild, moderate or severe, and give hipDepthByFrame: one short note " +
+        "per frame describing whether the hips have moved toward the ball versus frame 1.\n" +
+        "If the club or the hips genuinely cannot be made out, set detected false and say which frames " +
+        "failed rather than describing a swing you cannot see. A confident wrong answer is worse than " +
+        "an admission.\n" +
+        'Return only JSON: {"detected":true,"score":"short label with a percent",' +
+        '"backswing":"...","downswing":"...","planeSummary":"one or two sentences naming frames",' +
+        '"earlyExtension":{"severity":"none|mild|moderate|severe","summary":"naming frames",' +
+        '"hipDepthByFrame":["f1: ...","f2: ..."]},"drill":"one actionable feel drill"}';
+
+      logLine("info", "Swing analysis", {
+        frames: images.length,
+        peakFrame: sel.peakIdx,
+        windowFrames: (sel.hi - sel.lo + 1),
+        fps: +sel.fps.toFixed(1),
+        kb: Math.round(images.reduce((t, b) => t + b.length, 0) * 0.75 / 1024)
+      });
+
+      const parsed = await callGemini(prompt, images, 90000, "medium");
+
+      aiLoader.classList.add("hidden");
+      if (!parsed) {
+        aiScore.textContent = "Analysis unavailable" + (lastGeminiError ? " — " + lastGeminiError : "");
+        aiSetupText.textContent = "No cloud analysis this time.";
+        aiPlaneText.textContent = "Scrub the clip against the green plane line instead: the shaft should track it going back and coming down.";
+        aiDrillText.textContent = "Keep the lead glute touching the tush line through impact.";
+        aiContentBody.classList.remove("hidden");
+        return;
+      }
+
+      const ee = parsed.earlyExtension || {};
+      const byFrame = Array.isArray(ee.hipDepthByFrame) ? ee.hipDepthByFrame.join("  ·  ") : "";
+
+      if (parsed.detected === false) {
+        // Reported, not dressed up. The frames are in the log and on screen, so
+        // a refusal is something the golfer can act on.
+        aiScore.textContent = "Could not read the swing";
+        aiSetupText.textContent = ee.summary || "The hips could not be made out in these frames.";
+        aiPlaneText.textContent = parsed.planeSummary || "The club could not be followed through these frames.";
+        aiDrillText.textContent = "Try again with the club and hips fully in frame, or a brighter background.";
+        aiContentBody.classList.remove("hidden");
+        logLine("warn", "Swing analysis declined", parsed.planeSummary || "");
+        return;
+      }
+
+      aiScore.textContent = parsed.score || "Analysed";
+      aiSetupText.textContent =
+        (ee.severity ? "Severity: " + ee.severity + ". " : "") +
+        (ee.summary || "") + (byFrame ? "\n" + byFrame : "");
+      aiPlaneText.textContent =
+        (parsed.planeSummary || "") +
+        (parsed.backswing ? "\nBackswing: " + parsed.backswing : "") +
+        (parsed.downswing ? "\nDownswing: " + parsed.downswing : "");
+      aiDrillText.textContent = parsed.drill || "";
+      aiContentBody.classList.remove("hidden");
+      if (window.lucide) lucide.createIcons();
+      logLine("ok", "Swing analysed", { severity: ee.severity || "?", score: parsed.score || "" });
+    }
+
     // ---------- AI review ----------
     async function analyzeCurrentSwing() {
       unlockMobileAudio();
@@ -2699,6 +2869,12 @@
       aiModal.classList.remove("hidden");
       aiLoader.classList.remove("hidden");
       aiContentBody.classList.add("hidden");
+      // The two analyses share one modal, so each restates its own headings.
+      aiLabel1.textContent = "Setup and pelvic depth";
+      aiLabel2.textContent = "Shaft plane and corridor";
+      aiLabel3.textContent = "Rehearsal drill";
+      btnReAnalyze.textContent = "Take new snapshot";
+      aiModalMode = "setup";
 
       const prompt = "You are a PGA instructor analyzing a golf swing frame. " +
         "Return only JSON: " +
@@ -2953,6 +3129,7 @@
       syncReplayUi();
     });
 
+    btnAnalyseSwing.addEventListener("click", analyseRecordedSwing);
     btnSaveFrame.addEventListener("click", saveFrame);
     btnSaveClip.addEventListener("click", startClipExport);
 
@@ -3000,7 +3177,10 @@
     });
 
     btnAiAnalyze.addEventListener("click", analyzeCurrentSwing);
-    btnReAnalyze.addEventListener("click", analyzeCurrentSwing);
+    btnReAnalyze.addEventListener("click", () => {
+      if (aiModalMode === "swing") analyseRecordedSwing();
+      else analyzeCurrentSwing();
+    });
     btnCloseModal.addEventListener("click", () => aiModal.classList.add("hidden"));
     aiModal.addEventListener("click", (e) => { if (e.target === aiModal) aiModal.classList.add("hidden"); });
 
